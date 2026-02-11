@@ -32,6 +32,14 @@ class Grid:
         fx, fy = jnp.meshgrid(fx_1d, fy_1d, indexing="xy")
         return fx, fy
 
+    def spatial_grid(self) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """Return centered spatial grids in micrometers."""
+        self.validate()
+        x_1d = (jnp.arange(self.nx) - (self.nx - 1) / 2.0) * self.dx_um
+        y_1d = (jnp.arange(self.ny) - (self.ny - 1) / 2.0) * self.dy_um
+        x, y = jnp.meshgrid(x_1d, y_1d, indexing="xy")
+        return x, y
+
     def validate(self) -> None:
         if self.nx <= 0 or self.ny <= 0:
             raise ValueError("grid sizes nx and ny must be positive integers")
