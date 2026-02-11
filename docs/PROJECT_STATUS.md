@@ -50,6 +50,12 @@ Build a JAX-native, differentiable free-space optics library with reliable numer
   - `sum_fft_axis` channel-sum optimization behavior
   - invalid mode error path
 - Verified current test suite passes locally (`6 passed`).
+- Added `pyproject.toml` with:
+  - core package metadata
+  - `test` and `dev` dependency groups
+  - minimal `pytest`, `ruff`, and `mypy` configuration
+- Added CI workflow at `.github/workflows/ci.yml` to run lint, type checks, and tests on PRs/pushes to `main`.
+- Added educational workflow documentation at `docs/DEVELOPMENT_WORKFLOW.md`.
 
 ### In Progress
 
@@ -57,7 +63,7 @@ Build a JAX-native, differentiable free-space optics library with reliable numer
 
 ### Next Up
 
-- Establish minimal packaging/dev tooling (`pyproject.toml`, test/dependency groups, pre-commit, CI workflow).
+- Enable and verify branch protection rules for `main` on GitHub.
 - Start optics-focused core primitives after numerical baseline is stable.
 
 ## Open TODO Backlog

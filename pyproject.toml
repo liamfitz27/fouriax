@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fouriax"
+version = "0.1.0"
+description = "Differentiable free-space optics for JAX"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "fouriax contributors" }]
+dependencies = [
+  "jax>=0.4.30",
+  "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8.0",
+  "scipy>=1.11",
+]
+dev = [
+  "ruff>=0.6",
+  "mypy>=1.10",
+  "pre-commit>=3.7",
+  "pytest>=8.0",
+  "scipy>=1.11",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
