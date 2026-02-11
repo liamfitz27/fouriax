@@ -26,7 +26,7 @@ def fftconvolve(
     if fft_shape is None:
         s1 = [input_tensor.shape[i] for i in axes]
         s2 = [kernel_tensor.shape[i] for i in axes]
-        fft_shape = tuple(int(s1_i + s2_i - 1) for s1_i, s2_i in zip(s1, s2))
+        fft_shape = tuple(int(s1_i + s2_i - 1) for s1_i, s2_i in zip(s1, s2, strict=True))
 
     inputs_are_real = jnp.issubdtype(input_tensor.dtype, jnp.floating) and jnp.issubdtype(
         kernel_tensor.dtype, jnp.floating
