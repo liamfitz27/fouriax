@@ -4,7 +4,12 @@ from scipy.special import j1
 from fouriax.optics import Field, Grid, RSPropagator, Spectrum, ThinLensLayer
 
 
-def _airy_profile(r_um: np.ndarray, wavelength_um: float, focal_um: float, diameter_um: float) -> np.ndarray:
+def _airy_profile(
+    r_um: np.ndarray,
+    wavelength_um: float,
+    focal_um: float,
+    diameter_um: float,
+) -> np.ndarray:
     alpha = np.pi * diameter_um * r_um / (wavelength_um * focal_um)
     profile = np.ones_like(alpha, dtype=np.float64)
     nonzero = alpha != 0.0
@@ -48,7 +53,9 @@ def test_thin_lens_focus_matches_airy_benchmark():
     first_zero_px = search_lo + min_idx_local
     measured_first_zero_um = first_zero_px * grid.dx_um
 
-    rel_err_first_zero = abs(measured_first_zero_um - expected_first_zero_um) / expected_first_zero_um
+    rel_err_first_zero = (
+        abs(measured_first_zero_um - expected_first_zero_um) / expected_first_zero_um
+    )
     assert rel_err_first_zero < 0.20
 
     r_max = 0.9 * expected_first_zero_um

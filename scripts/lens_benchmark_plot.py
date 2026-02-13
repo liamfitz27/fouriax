@@ -11,7 +11,12 @@ from scipy.special import j1
 from fouriax.optics import Field, Grid, RSPropagator, Spectrum, ThinLensLayer
 
 
-def airy_profile(r_um: np.ndarray, wavelength_um: float, focal_um: float, diameter_um: float) -> np.ndarray:
+def airy_profile(
+    r_um: np.ndarray,
+    wavelength_um: float,
+    focal_um: float,
+    diameter_um: float,
+) -> np.ndarray:
     alpha = np.pi * diameter_um * r_um / (wavelength_um * focal_um)
     profile = np.ones_like(alpha, dtype=np.float64)
     nonzero = alpha != 0.0
@@ -64,7 +69,14 @@ def run_benchmark() -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, f
         diameter_um=aperture_diameter_um,
     )
     mean_abs_err = float(np.mean(np.abs(sim_profile - airy)))
-    return r_compare, sim_profile, airy, expected_first_zero_um, measured_first_zero_um, mean_abs_err
+    return (
+        r_compare,
+        sim_profile,
+        airy,
+        expected_first_zero_um,
+        measured_first_zero_um,
+        mean_abs_err,
+    )
 
 
 def main() -> None:
