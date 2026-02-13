@@ -1,7 +1,16 @@
 """fouriax package."""
 
 from fouriax.core.fft import fftconvolve
-from fouriax.optics import Field, Grid, OpticalLayer, PropagationModel, Sensor, Spectrum
+from fouriax.optics import (
+    Field,
+    Grid,
+    OpticalLayer,
+    PropagationModel,
+    RSPropagator,
+    Sensor,
+    Spectrum,
+    ThinLensLayer,
+)
 
 __all__ = [
     "fftconvolve",
@@ -11,4 +20,6 @@ __all__ = [
     "OpticalLayer",
     "Sensor",
     "PropagationModel",
+    "ThinLensLayer",
+    "RSPropagator",
 ]
