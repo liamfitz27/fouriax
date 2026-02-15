@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import dataclass, field
 
 import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
@@ -99,7 +99,7 @@ class RSPropagator(PropagationModel):
     """
 
     use_sampling_planner: bool = True
-    sampling_planner: SamplingPlanner = dataclass_field(default_factory=SamplingPlanner)
+    sampling_planner: SamplingPlanner = field(default_factory=SamplingPlanner)
 
     def impulse_response(
         self,
@@ -157,7 +157,7 @@ class ASMPropagator(PropagationModel):
     """
 
     use_sampling_planner: bool = True
-    sampling_planner: SamplingPlanner = dataclass_field(default_factory=SamplingPlanner)
+    sampling_planner: SamplingPlanner = field(default_factory=SamplingPlanner)
 
     def transfer_function(
         self,
@@ -207,9 +207,9 @@ class AutoPropagator(PropagationModel):
     Propagator wrapper that selects ASM or RS using PropagationPolicy.
     """
 
-    asm: ASMPropagator = dataclass_field(default_factory=ASMPropagator)
-    rs: RSPropagator = dataclass_field(default_factory=RSPropagator)
-    policy: PropagationPolicy = dataclass_field(default_factory=PropagationPolicy)
+    asm: ASMPropagator = field(default_factory=ASMPropagator)
+    rs: RSPropagator = field(default_factory=RSPropagator)
+    policy: PropagationPolicy = field(default_factory=PropagationPolicy)
 
     def propagate(self, field: Field, distance_um: float) -> Field:
         self.validate_for(field)

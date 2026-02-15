@@ -141,7 +141,11 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
                 )
                 field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
                 field_lens = lens.forward(field_in)
-                policy_decision = policy.choose(grid=grid, spectrum=spectrum, distance_um=distance_um)
+                policy_decision = policy.choose(
+                    grid=grid,
+                    spectrum=spectrum,
+                    distance_um=distance_um,
+                )
 
                 method_results: dict[str, tuple[float, float]] = {}
                 for method_name, factory in method_factories.items():
