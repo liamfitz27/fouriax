@@ -127,7 +127,10 @@ class RSPropagator(PropagationModel):
         original_grid = field.grid
         plan = self.precomputed_plan
         if plan is None and self.use_sampling_planner:
-            plan = self.sampling_planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
+            plan = self.sampling_planner.recommend_grid(
+                mask_grid=field.grid,
+                spectrum=field.spectrum,
+            )
         work_field = _prepare_field_with_plan(field, plan) if plan is not None else field
 
         area_um2 = work_field.grid.dx_um * work_field.grid.dy_um
@@ -185,7 +188,10 @@ class ASMPropagator(PropagationModel):
         original_grid = field.grid
         plan = self.precomputed_plan
         if plan is None and self.use_sampling_planner:
-            plan = self.sampling_planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
+            plan = self.sampling_planner.recommend_grid(
+                mask_grid=field.grid,
+                spectrum=field.spectrum,
+            )
         work_field = _prepare_field_with_plan(field, plan) if plan is not None else field
 
         outputs = []
@@ -219,7 +225,11 @@ class AutoPropagator(PropagationModel):
 
         plan = self.precomputed_plan
         if plan is None and (self.rs.use_sampling_planner or self.asm.use_sampling_planner):
-            planner = self.rs.sampling_planner if self.rs.use_sampling_planner else self.asm.sampling_planner
+            planner = (
+                self.rs.sampling_planner
+                if self.rs.use_sampling_planner
+                else self.asm.sampling_planner
+            )
             plan = planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
 
         method = self.precomputed_method

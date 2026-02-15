@@ -44,7 +44,9 @@ def test_focal_spot_loss_decreases_over_short_optimization():
 
     def loss_fn(phase_map: jnp.ndarray) -> jnp.ndarray:
         phase_limited = 2 * jnp.pi * jax.nn.sigmoid(phase_map)
-        field = field_in.apply_phase(phase_limited[None, :, :]).apply_amplitude(aperture[None, :, :])
+        field = field_in.apply_phase(phase_limited[None, :, :]).apply_amplitude(
+            aperture[None, :, :]
+        )
         out = propagator.propagate(field, distance_um=distance_um)
         return focal_spot_loss(out.intensity(), target_xy=target_xy, window_px=1)
 
