@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -74,7 +76,11 @@ class Spectrum:
             raise ValueError("spectrum wavelengths_um must be a 1D array")
         if self.wavelengths_um.size == 0:
             raise ValueError("spectrum must contain at least one wavelength")
-        if not bool(jnp.all(self.wavelengths_um > 0)):
+        # During JAX tracing, Python bool conversion on traced arrays is invalid.
+        # Keep strict positivity checks for eager execution and skip in traced mode.
+        if isinstance(self.wavelengths_um, jax.core.Tracer):
+            return
+        if np.any(np.asarray(self.wavelengths_um) <= 0):
             raise ValueError("all wavelengths_um must be strictly positive")
 
 
