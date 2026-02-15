@@ -2,6 +2,7 @@
 
 from fouriax.optics.interfaces import OpticalLayer, PropagationModel, Sensor
 from fouriax.optics.layers import ThinLensLayer
+from fouriax.optics.losses import focal_spot_loss
 from fouriax.optics.model import Field, Grid, Spectrum
 from fouriax.optics.planning import (
     PropagationDecision,
@@ -19,6 +20,7 @@ __all__ = [
     "Sensor",
     "PropagationModel",
     "ThinLensLayer",
+    "focal_spot_loss",
     "ASMPropagator",
     "RSPropagator",
     "AutoPropagator",

@@ -16,6 +16,7 @@ from fouriax.optics import (
     Sensor,
     Spectrum,
     ThinLensLayer,
+    focal_spot_loss,
 )
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "Sensor",
     "PropagationModel",
     "ThinLensLayer",
+    "focal_spot_loss",
     "ASMPropagator",
     "RSPropagator",
     "AutoPropagator",

@@ -8,7 +8,7 @@ from jax.scipy import ndimage as jndimage
 from fouriax.core.fft import fftconvolve
 from fouriax.optics.interfaces import PropagationModel
 from fouriax.optics.model import Field, Grid
-from fouriax.optics.planning import PropagationPolicy, SamplingPlanner
+from fouriax.optics.planning import PropagationPolicy, SamplingPlan, SamplingPlanner
 
 
 def _resample_2d_to_grid(
@@ -44,14 +44,13 @@ def _resample_2d_to_grid(
     return jnp.asarray(real + 1j * imag, dtype=data_2d.dtype)
 
 
-def _prepare_field_with_planning(field: Field, planner: SamplingPlanner) -> Field:
+def _prepare_field_with_plan(field: Field, plan: SamplingPlan) -> Field:
     """
     Apply planner-driven resampling and padding for propagation stability.
 
     The resulting propagation grid may have both different shape and different
     spacing (dx_um, dy_um) compared to the input field grid.
     """
-    plan = planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
     target_grid = plan.grid
     if (
         target_grid.nx == field.grid.nx
@@ -100,6 +99,7 @@ class RSPropagator(PropagationModel):
 
     use_sampling_planner: bool = True
     sampling_planner: SamplingPlanner = field(default_factory=SamplingPlanner)
+    precomputed_plan: SamplingPlan | None = None
 
     def impulse_response(
         self,
@@ -125,16 +125,18 @@ class RSPropagator(PropagationModel):
             raise ValueError("distance_um must be strictly positive")
 
         original_grid = field.grid
-        work_field = (
-            _prepare_field_with_planning(field, self.sampling_planner)
-            if self.use_sampling_planner
-            else field
-        )
+        plan = self.precomputed_plan
+        if plan is None and self.use_sampling_planner:
+            plan = self.sampling_planner.recommend_grid(
+                mask_grid=field.grid,
+                spectrum=field.spectrum,
+            )
+        work_field = _prepare_field_with_plan(field, plan) if plan is not None else field
 
         area_um2 = work_field.grid.dx_um * work_field.grid.dy_um
         outputs = []
         for i, wavelength_um in enumerate(work_field.spectrum.wavelengths_um):
-            kernel = self.impulse_response(work_field, float(wavelength_um), distance_um)
+            kernel = self.impulse_response(work_field, wavelength_um, distance_um)
             propagated = fftconvolve(
                 work_field.data[i],
                 kernel,
@@ -158,6 +160,7 @@ class ASMPropagator(PropagationModel):
 
     use_sampling_planner: bool = True
     sampling_planner: SamplingPlanner = field(default_factory=SamplingPlanner)
+    precomputed_plan: SamplingPlan | None = None
 
     def transfer_function(
         self,
@@ -183,15 +186,17 @@ class ASMPropagator(PropagationModel):
             raise ValueError("distance_um must be strictly positive")
 
         original_grid = field.grid
-        work_field = (
-            _prepare_field_with_planning(field, self.sampling_planner)
-            if self.use_sampling_planner
-            else field
-        )
+        plan = self.precomputed_plan
+        if plan is None and self.use_sampling_planner:
+            plan = self.sampling_planner.recommend_grid(
+                mask_grid=field.grid,
+                spectrum=field.spectrum,
+            )
+        work_field = _prepare_field_with_plan(field, plan) if plan is not None else field
 
         outputs = []
         for i, wavelength_um in enumerate(work_field.spectrum.wavelengths_um):
-            transfer = self.transfer_function(work_field, float(wavelength_um), distance_um)
+            transfer = self.transfer_function(work_field, wavelength_um, distance_um)
             spectrum = jnp.fft.fftn(work_field.data[i], axes=(-2, -1))
             propagated = jnp.fft.ifftn(spectrum * transfer, axes=(-2, -1))
             outputs.append(propagated)
@@ -210,20 +215,33 @@ class AutoPropagator(PropagationModel):
     asm: ASMPropagator = field(default_factory=ASMPropagator)
     rs: RSPropagator = field(default_factory=RSPropagator)
     policy: PropagationPolicy = field(default_factory=PropagationPolicy)
+    precomputed_plan: SamplingPlan | None = None
+    precomputed_method: str | None = None
 
     def propagate(self, field: Field, distance_um: float) -> Field:
         self.validate_for(field)
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
-        planner = self.rs.sampling_planner if self.rs.use_sampling_planner else SamplingPlanner()
-        plan = planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
-        decision = self.policy.choose(
-            grid=field.grid,
-            spectrum=field.spectrum,
-            distance_um=distance_um,
-            plan=plan,
-        )
-        if decision.method == "asm":
+        plan = self.precomputed_plan
+        if plan is None and (self.rs.use_sampling_planner or self.asm.use_sampling_planner):
+            planner = (
+                self.rs.sampling_planner
+                if self.rs.use_sampling_planner
+                else self.asm.sampling_planner
+            )
+            plan = planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
+
+        method = self.precomputed_method
+        if method is None:
+            decision = self.policy.choose(
+                grid=field.grid,
+                spectrum=field.spectrum,
+                distance_um=distance_um,
+                plan=plan,
+            )
+            method = decision.method
+
+        if method == "asm":
             return self.asm.propagate(field, distance_um=distance_um)
         return self.rs.propagate(field, distance_um=distance_um)
