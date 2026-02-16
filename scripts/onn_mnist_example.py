@@ -109,7 +109,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     learning_rate = 0.2
     num_phase_layers = 4
     phase_mask_downsample = 4
-    nyquist_fraction = 1.0
+    nyquist_factor = 1.0
     distance_um = 50.0
     train_samples = 1000
     test_samples = 100
@@ -124,13 +124,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         input_grid = Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
         spectrum = Spectrum.from_scalar(1.55)
         propagator = AutoPropagator(
-            policy_mode="balanced",
             setup_grid=input_grid,
             setup_spectrum=spectrum,
             setup_distance_um=distance_um,
-            nyquist_fraction=nyquist_fraction,
+            nyquist_factor=nyquist_factor,
         )
-        work_grid = propagator.precomputed_plan.grid
+        if propagator.precomputed_grid is None:
+            raise RuntimeError("AutoPropagator did not build a precomputed grid")
+        work_grid = propagator.precomputed_grid
         mask_nx = work_grid.nx // phase_mask_downsample
         mask_ny = work_grid.ny // phase_mask_downsample
         mask_grid = Grid.from_extent(
