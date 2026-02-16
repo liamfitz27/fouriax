@@ -149,14 +149,12 @@ What runs:
 
 - Local hooks only (no external hook repo fetch during commit).
 - On commit: `ruff check`, `mypy src`, and `pytest -q`.
-- On push: `pytest -q`.
 
 Setup:
 
 ```bash
 pip install -e ".[dev]"
 pre-commit install
-pre-commit install --hook-type pre-push
 ```
 
 Repo helper setup (recommended):

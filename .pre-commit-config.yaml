@@ -20,4 +20,4 @@ repos:
         entry: bash -c 'PYTHONPATH=src python -m pytest -q'
         language: system
         pass_filenames: false
-        stages: [pre-commit, pre-push]
+        stages: [pre-commit]
