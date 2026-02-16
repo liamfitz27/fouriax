@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from typing import Literal
 
 import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
 
 from fouriax.core.fft import fftconvolve
 from fouriax.optics.interfaces import PropagationModel
-from fouriax.optics.model import Field, Grid
+from fouriax.optics.model import Field, Grid, Spectrum
 from fouriax.optics.planning import PropagationPolicy, SamplingPlan, SamplingPlanner
 
 
@@ -209,14 +210,78 @@ class ASMPropagator(PropagationModel):
 @dataclass(frozen=True)
 class AutoPropagator(PropagationModel):
     """
-    Propagator wrapper that selects ASM or RS using PropagationPolicy.
+    Propagator wrapper that auto-selects ASM or RS.
     """
 
     asm: ASMPropagator = field(default_factory=ASMPropagator)
     rs: RSPropagator = field(default_factory=RSPropagator)
-    policy: PropagationPolicy = field(default_factory=PropagationPolicy)
+    policy_mode: Literal["fast", "balanced", "accurate"] = "balanced"
+    equality_tolerance: float = 1e-6
+    rs_cost_ratio_threshold: float = 8.0
+    nyquist_fraction: float = 2.0
+    min_padding_factor: float = 2.0
+    setup_grid: Grid | None = None
+    setup_spectrum: Spectrum | None = None
+    setup_distance_um: float | None = None
     precomputed_plan: SamplingPlan | None = None
     precomputed_method: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.precomputed_plan is not None:
+            asm = self.asm
+            rs = self.rs
+            if asm.precomputed_plan is None or asm.use_sampling_planner:
+                asm = replace(asm, use_sampling_planner=False, precomputed_plan=self.precomputed_plan)
+            if rs.precomputed_plan is None or rs.use_sampling_planner:
+                rs = replace(rs, use_sampling_planner=False, precomputed_plan=self.precomputed_plan)
+            object.__setattr__(self, "asm", asm)
+            object.__setattr__(self, "rs", rs)
+
+        if (
+            self.setup_grid is not None
+            and self.setup_spectrum is not None
+            and self.setup_distance_um is not None
+            and (self.precomputed_plan is None or self.precomputed_method is None)
+        ):
+            if self.setup_distance_um <= 0:
+                raise ValueError("setup_distance_um must be strictly positive")
+            self.setup_grid.validate()
+            self.setup_spectrum.validate()
+            policy = PropagationPolicy(
+                mode=self.policy_mode,
+                equality_tolerance=self.equality_tolerance,
+                rs_cost_ratio_threshold=self.rs_cost_ratio_threshold,
+            )
+            plan = self.precomputed_plan
+            if plan is None and (self.rs.use_sampling_planner or self.asm.use_sampling_planner):
+                planner = SamplingPlanner(
+                    nyquist_fraction=self.nyquist_fraction,
+                    min_padding_factor=self.min_padding_factor,
+                )
+                plan = planner.recommend_grid(
+                    mask_grid=self.setup_grid,
+                    spectrum=self.setup_spectrum,
+                )
+            method = self.precomputed_method
+            if method is None:
+                method = policy.choose(
+                    grid=self.setup_grid,
+                    spectrum=self.setup_spectrum,
+                    distance_um=self.setup_distance_um,
+                    plan=plan,
+                ).method
+            object.__setattr__(self, "precomputed_plan", plan)
+            object.__setattr__(self, "precomputed_method", method)
+
+            asm = self.asm
+            rs = self.rs
+            if plan is not None:
+                if asm.precomputed_plan is None or asm.use_sampling_planner:
+                    asm = replace(asm, use_sampling_planner=False, precomputed_plan=plan)
+                if rs.precomputed_plan is None or rs.use_sampling_planner:
+                    rs = replace(rs, use_sampling_planner=False, precomputed_plan=plan)
+            object.__setattr__(self, "asm", asm)
+            object.__setattr__(self, "rs", rs)
 
     def propagate(self, field: Field, distance_um: float) -> Field:
         self.validate_for(field)
@@ -225,16 +290,19 @@ class AutoPropagator(PropagationModel):
 
         plan = self.precomputed_plan
         if plan is None and (self.rs.use_sampling_planner or self.asm.use_sampling_planner):
-            planner = (
-                self.rs.sampling_planner
-                if self.rs.use_sampling_planner
-                else self.asm.sampling_planner
+            planner = SamplingPlanner(
+                nyquist_fraction=self.nyquist_fraction,
+                min_padding_factor=self.min_padding_factor,
             )
             plan = planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
 
         method = self.precomputed_method
         if method is None:
-            decision = self.policy.choose(
+            decision = PropagationPolicy(
+                mode=self.policy_mode,
+                equality_tolerance=self.equality_tolerance,
+                rs_cost_ratio_threshold=self.rs_cost_ratio_threshold,
+            ).choose(
                 grid=field.grid,
                 spectrum=field.spectrum,
                 distance_um=distance_um,

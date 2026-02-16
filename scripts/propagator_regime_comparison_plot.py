@@ -12,11 +12,11 @@ from fouriax.optics import (
     ASMPropagator,
     Field,
     Grid,
-    PropagationPolicy,
     RSPropagator,
     Spectrum,
     ThinLensLayer,
 )
+from fouriax.optics.planning import PropagationPolicy
 
 
 def airy_profile(

@@ -2,13 +2,13 @@ import jax
 import jax.numpy as jnp
 
 from fouriax.optics import (
-    ASMPropagator,
+    AmplitudeMaskLayer,
     AutoPropagator,
     Field,
     Grid,
-    PropagationPolicy,
-    RSPropagator,
-    SamplingPlanner,
+    OpticalModule,
+    PhaseMaskLayer,
+    PropagationLayer,
     Spectrum,
     focal_spot_loss,
 )
@@ -28,26 +28,27 @@ def test_focal_spot_loss_decreases_over_short_optimization():
     aperture = _circular_aperture(grid, diameter_um=20.0)
 
     distance_um = 200.0
-    planner = SamplingPlanner(safety_factor=2.0, min_padding_factor=2.0)
-    plan = planner.recommend_grid(mask_grid=grid, spectrum=spectrum)
-    policy = PropagationPolicy(mode="balanced")
-    decision = policy.choose(grid=grid, spectrum=spectrum, distance_um=distance_um, plan=plan)
     propagator = AutoPropagator(
-        asm=ASMPropagator(use_sampling_planner=False, precomputed_plan=plan),
-        rs=RSPropagator(use_sampling_planner=False, precomputed_plan=plan),
-        policy=policy,
-        precomputed_plan=plan,
-        precomputed_method=decision.method,
+        policy_mode="balanced",
+        setup_grid=grid,
+        setup_spectrum=spectrum,
+        setup_distance_um=distance_um,
     )
 
     target_xy = (grid.nx // 2, grid.ny // 2)
 
+    def make_module(phase_2d: jnp.ndarray) -> OpticalModule:
+        return OpticalModule(
+            layers=(
+                PhaseMaskLayer(phase_map_rad=phase_2d[None, :, :]),
+                AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+                PropagationLayer(model=propagator, distance_um=distance_um),
+            )
+        )
+
     def loss_fn(phase_map: jnp.ndarray) -> jnp.ndarray:
         phase_limited = 2 * jnp.pi * jax.nn.sigmoid(phase_map)
-        field = field_in.apply_phase(phase_limited[None, :, :]).apply_amplitude(
-            aperture[None, :, :]
-        )
-        out = propagator.propagate(field, distance_um=distance_um)
+        out = make_module(phase_limited).forward(field_in)
         return focal_spot_loss(out.intensity(), target_xy=target_xy, window_px=1)
 
     value_and_grad = jax.value_and_grad(loss_fn)

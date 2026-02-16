@@ -16,12 +16,11 @@ from fouriax.optics import (
     ASMPropagator,
     Field,
     Grid,
-    PropagationPolicy,
     RSPropagator,
-    SamplingPlanner,
     Spectrum,
     ThinLensLayer,
 )
+from fouriax.optics.planning import PropagationPolicy, SamplingPlanner
 
 
 def airy_profile(
@@ -111,7 +110,7 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
         "asm_base": lambda: ASMPropagator(use_sampling_planner=False),
         "asm_planned_s2": lambda: ASMPropagator(
             use_sampling_planner=True,
-            sampling_planner=SamplingPlanner(safety_factor=2.0, min_padding_factor=2.0),
+            sampling_planner=SamplingPlanner(nyquist_fraction=2.0, min_padding_factor=2.0),
         ),
         "rs_base": lambda: RSPropagator(use_sampling_planner=False),
     }
@@ -121,7 +120,7 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
             lambda sf=s: RSPropagator(
                 use_sampling_planner=True,
                 sampling_planner=SamplingPlanner(
-                    safety_factor=sf,
+                    nyquist_fraction=sf,
                     min_padding_factor=args.padding_factor,
                 ),
             )

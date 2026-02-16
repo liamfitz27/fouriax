@@ -23,7 +23,7 @@ class SamplingPlan:
     dx_um: float
     dy_um: float
     min_wavelength_um: float
-    safety_factor: float
+    nyquist_fraction: float
     sampling_ratio: float
     is_sampling_safe: bool
     warning: str | None = None
@@ -53,19 +53,19 @@ class SamplingPlanner:
     All length units are micrometers (um).
     """
 
-    safety_factor: float = 2.0
+    nyquist_fraction: float = 2.0
     min_padding_factor: float = 2.0
 
     def recommend_grid(self, mask_grid: Grid, spectrum: Spectrum) -> SamplingPlan:
         mask_grid.validate()
         spectrum.validate()
-        if self.safety_factor <= 0:
-            raise ValueError("safety_factor must be strictly positive")
+        if self.nyquist_fraction <= 0:
+            raise ValueError("nyquist_fraction must be strictly positive")
         if self.min_padding_factor < 1.0:
             raise ValueError("min_padding_factor must be >= 1.0")
 
         min_wavelength_um = float(jnp.min(spectrum.wavelengths_um))
-        nyquist_limited_dx = min_wavelength_um / (2.0 * self.safety_factor)
+        nyquist_limited_dx = min_wavelength_um / (2.0 * self.nyquist_fraction)
 
         upsample_x = max(1, int(jnp.ceil(mask_grid.dx_um / nyquist_limited_dx)))
         upsample_y = max(1, int(jnp.ceil(mask_grid.dy_um / nyquist_limited_dx)))
@@ -79,10 +79,10 @@ class SamplingPlanner:
         ny = _next_power_of_two(padded_ny)
 
         sampling_ratio = min_wavelength_um / (2.0 * max(dx_um, dy_um))
-        is_sampling_safe = sampling_ratio >= self.safety_factor
+        is_sampling_safe = sampling_ratio >= self.nyquist_fraction
         warning = None
         if not is_sampling_safe:
-            warning = "Sampling ratio below requested safety factor; aliasing risk may be high."
+            warning = "Sampling ratio below requested nyquist_fraction; aliasing risk may be high."
 
         return SamplingPlan(
             nx=nx,
@@ -90,14 +90,14 @@ class SamplingPlanner:
             dx_um=dx_um,
             dy_um=dy_um,
             min_wavelength_um=min_wavelength_um,
-            safety_factor=self.safety_factor,
+            nyquist_fraction=self.nyquist_fraction,
             sampling_ratio=float(sampling_ratio),
             is_sampling_safe=is_sampling_safe,
             warning=warning,
         )
 
     def estimate_aliasing_margin(self, plan: SamplingPlan) -> float:
-        return plan.sampling_ratio / plan.safety_factor
+        return plan.sampling_ratio / plan.nyquist_fraction
 
     def validate_grid(self, grid: Grid, spectrum: Spectrum) -> SamplingPlan:
         return self.recommend_grid(mask_grid=grid, spectrum=spectrum)
