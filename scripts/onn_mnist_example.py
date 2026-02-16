@@ -174,7 +174,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         logits_batch = jax.vmap(logits_single, in_axes=(None, 0))
 
-        def batch_loss(params: jnp.ndarray, images: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
+        def batch_loss(
+            params: jnp.ndarray, images: jnp.ndarray, labels: jnp.ndarray
+        ) -> jnp.ndarray:
             logits = logits_batch(params, images)
             log_probs = logits - jax.scipy.special.logsumexp(logits, axis=1, keepdims=True)
             nll = -log_probs[jnp.arange(labels.shape[0]), labels]

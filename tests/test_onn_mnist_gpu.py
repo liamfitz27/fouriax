@@ -1,5 +1,6 @@
 import pytest
 
+
 def _has_cuda_gpu(jax) -> bool:
     try:
         gpu_devices = jax.devices("gpu")

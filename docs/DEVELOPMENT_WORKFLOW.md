@@ -147,8 +147,9 @@ Config file:
 
 What runs:
 
-- On commit: basic repository hygiene + `ruff` + `mypy`.
-- On push: `pytest`.
+- Local hooks only (no external hook repo fetch during commit).
+- On commit: `ruff check`, `mypy src`, and `pytest -q`.
+- On push: `pytest -q`.
 
 Setup:
 
@@ -170,6 +171,13 @@ Manual run:
 
 ```bash
 pre-commit run --all-files
+```
+
+In restricted/sandboxed environments where home-directory cache paths may be read-only,
+set a writable hook cache location before running hooks:
+
+```bash
+PRE_COMMIT_HOME=/tmp/pre-commit-cache pre-commit run --all-files
 ```
 
 Local quality gate (CI parity for lint/type/test checks):
