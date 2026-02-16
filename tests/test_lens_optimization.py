@@ -29,7 +29,6 @@ def test_focal_spot_loss_decreases_over_short_optimization():
 
     distance_um = 200.0
     propagator = AutoPropagator(
-        policy_mode="balanced",
         setup_grid=grid,
         setup_spectrum=spectrum,
         setup_distance_um=distance_um,

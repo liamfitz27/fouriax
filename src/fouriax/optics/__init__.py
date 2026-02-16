@@ -21,7 +21,14 @@ from fouriax.optics.losses import (
 )
 from fouriax.optics.model import Field, Grid, Spectrum
 from fouriax.optics.plotting import plot_field_evolution
-from fouriax.optics.propagation import ASMPropagator, AutoPropagator, RSPropagator
+from fouriax.optics.propagation import (
+    ASMPropagator,
+    AutoPropagator,
+    RSPropagator,
+    critical_distance_um,
+    recommend_nyquist_grid,
+    select_propagator_method,
+)
 from fouriax.optics.sensors import FieldReadout, IntensitySensor
 
 __all__ = [
@@ -50,5 +57,8 @@ __all__ = [
     "ASMPropagator",
     "RSPropagator",
     "AutoPropagator",
+    "critical_distance_um",
+    "select_propagator_method",
+    "recommend_nyquist_grid",
     "plot_field_evolution",
 ]

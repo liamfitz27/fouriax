@@ -11,8 +11,10 @@ requires-python = ">=3.12"
 license = { text = "Proprietary" }
 authors = [{ name = "fouriax contributors" }]
 dependencies = [
-  "jax>=0.4.30",
-  "numpy>=1.26",
+  "jax[cuda12]>=0.4.30",
+  "matplotlib>=3.8",
+  "numpy>=1.26,<2",
+  "optax>=0.2.3",
 ]
 
 [project.optional-dependencies]

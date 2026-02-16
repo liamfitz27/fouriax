@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field, replace
-from typing import Literal
 
 import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
@@ -9,7 +9,81 @@ from jax.scipy import ndimage as jndimage
 from fouriax.core.fft import fftconvolve
 from fouriax.optics.interfaces import PropagationModel
 from fouriax.optics.model import Field, Grid, Spectrum
-from fouriax.optics.planning import PropagationPolicy, SamplingPlan, SamplingPlanner
+
+
+def _next_power_of_two(n: int) -> int:
+    if n <= 1:
+        return 1
+    return 1 << (n - 1).bit_length()
+
+
+def critical_distance_um(grid: Grid, spectrum: Spectrum) -> float:
+    """
+    Compute conservative critical distance separating ASM and RS regimes.
+
+    z_crit = N_eff * (dx_eff^2) / lambda_min
+    where N_eff=min(nx, ny), dx_eff=max(dx_um, dy_um), lambda_min=min(wavelengths_um)
+    """
+    grid.validate()
+    spectrum.validate()
+    n_eff = min(grid.nx, grid.ny)
+    dx_eff = max(grid.dx_um, grid.dy_um)
+    lambda_min_um = float(jnp.min(spectrum.wavelengths_um))
+    return float(n_eff * (dx_eff**2) / lambda_min_um)
+
+
+def select_propagator_method(
+    grid: Grid,
+    spectrum: Spectrum,
+    distance_um: float,
+    equality_tolerance: float = 1e-6,
+) -> str:
+    """
+    Select recommended method by critical-distance regime.
+
+    - distance < z_crit * (1 - tol) -> ASM
+    - otherwise -> RS
+    """
+    if distance_um <= 0:
+        raise ValueError("distance_um must be strictly positive")
+    if equality_tolerance < 0:
+        raise ValueError("equality_tolerance must be >= 0")
+    z_crit = critical_distance_um(grid=grid, spectrum=spectrum)
+    if distance_um < z_crit * (1.0 - equality_tolerance):
+        return "asm"
+    return "rs"
+
+
+def recommend_nyquist_grid(
+    grid: Grid,
+    spectrum: Spectrum,
+    nyquist_factor: float = 2.0,
+    min_padding_factor: float = 2.0,
+) -> Grid:
+    """
+    Build a denser padded propagation grid from nyquist_factor and padding.
+    """
+    grid.validate()
+    spectrum.validate()
+    if nyquist_factor <= 0:
+        raise ValueError("nyquist_factor must be strictly positive")
+    if min_padding_factor < 1.0:
+        raise ValueError("min_padding_factor must be >= 1.0")
+
+    min_wavelength_um = float(jnp.min(spectrum.wavelengths_um))
+    nyquist_limited_dx = min_wavelength_um / (2.0 * nyquist_factor)
+
+    upsample_x = max(1, int(jnp.ceil(grid.dx_um / nyquist_limited_dx)))
+    upsample_y = max(1, int(jnp.ceil(grid.dy_um / nyquist_limited_dx)))
+
+    dx_um = grid.dx_um / upsample_x
+    dy_um = grid.dy_um / upsample_y
+
+    padded_nx = int(jnp.ceil(grid.nx * min_padding_factor)) * upsample_x
+    padded_ny = int(jnp.ceil(grid.ny * min_padding_factor)) * upsample_y
+    nx = _next_power_of_two(padded_nx)
+    ny = _next_power_of_two(padded_ny)
+    return Grid.from_extent(nx=nx, ny=ny, dx_um=dx_um, dy_um=dy_um)
 
 
 def _resample_2d_to_grid(
@@ -45,14 +119,15 @@ def _resample_2d_to_grid(
     return jnp.asarray(real + 1j * imag, dtype=data_2d.dtype)
 
 
-def _prepare_field_with_plan(field: Field, plan: SamplingPlan) -> Field:
+def _prepare_field_with_grid(field: Field, target_grid: Grid | None) -> Field:
     """
-    Apply planner-driven resampling and padding for propagation stability.
+    Apply Nyquist-driven resampling and padding for propagation stability.
 
     The resulting propagation grid may have both different shape and different
     spacing (dx_um, dy_um) compared to the input field grid.
     """
-    target_grid = plan.grid
+    if target_grid is None:
+        return field
     if (
         target_grid.nx == field.grid.nx
         and target_grid.ny == field.grid.ny
@@ -99,8 +174,11 @@ class RSPropagator(PropagationModel):
     """
 
     use_sampling_planner: bool = True
-    sampling_planner: SamplingPlanner = field(default_factory=SamplingPlanner)
-    precomputed_plan: SamplingPlan | None = None
+    nyquist_factor: float = 2.0
+    min_padding_factor: float = 2.0
+    precomputed_grid: Grid | None = None
+    warn_on_regime_mismatch: bool = True
+    equality_tolerance: float = 1e-6
 
     def impulse_response(
         self,
@@ -125,14 +203,33 @@ class RSPropagator(PropagationModel):
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
-        original_grid = field.grid
-        plan = self.precomputed_plan
-        if plan is None and self.use_sampling_planner:
-            plan = self.sampling_planner.recommend_grid(
-                mask_grid=field.grid,
+        if self.warn_on_regime_mismatch:
+            method = select_propagator_method(
+                grid=field.grid,
                 spectrum=field.spectrum,
+                distance_um=distance_um,
+                equality_tolerance=self.equality_tolerance,
             )
-        work_field = _prepare_field_with_plan(field, plan) if plan is not None else field
+            if method != "rs":
+                z_crit = critical_distance_um(grid=field.grid, spectrum=field.spectrum)
+                warnings.warn(
+                    "RS selected outside recommended regime "
+                    f"(distance_um={distance_um:.3f}, z_crit_um={z_crit:.3f}, "
+                    "recommended='asm'). Continuing with RS as requested.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        original_grid = field.grid
+        target_grid = self.precomputed_grid
+        if target_grid is None and self.use_sampling_planner:
+            target_grid = recommend_nyquist_grid(
+                grid=field.grid,
+                spectrum=field.spectrum,
+                nyquist_factor=self.nyquist_factor,
+                min_padding_factor=self.min_padding_factor,
+            )
+        work_field = _prepare_field_with_grid(field, target_grid)
 
         area_um2 = work_field.grid.dx_um * work_field.grid.dy_um
         outputs = []
@@ -160,8 +257,11 @@ class ASMPropagator(PropagationModel):
     """
 
     use_sampling_planner: bool = True
-    sampling_planner: SamplingPlanner = field(default_factory=SamplingPlanner)
-    precomputed_plan: SamplingPlan | None = None
+    nyquist_factor: float = 2.0
+    min_padding_factor: float = 2.0
+    precomputed_grid: Grid | None = None
+    warn_on_regime_mismatch: bool = True
+    equality_tolerance: float = 1e-6
 
     def transfer_function(
         self,
@@ -186,14 +286,33 @@ class ASMPropagator(PropagationModel):
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
-        original_grid = field.grid
-        plan = self.precomputed_plan
-        if plan is None and self.use_sampling_planner:
-            plan = self.sampling_planner.recommend_grid(
-                mask_grid=field.grid,
+        if self.warn_on_regime_mismatch:
+            method = select_propagator_method(
+                grid=field.grid,
                 spectrum=field.spectrum,
+                distance_um=distance_um,
+                equality_tolerance=self.equality_tolerance,
             )
-        work_field = _prepare_field_with_plan(field, plan) if plan is not None else field
+            if method != "asm":
+                z_crit = critical_distance_um(grid=field.grid, spectrum=field.spectrum)
+                warnings.warn(
+                    "ASM selected outside recommended regime "
+                    f"(distance_um={distance_um:.3f}, z_crit_um={z_crit:.3f}, "
+                    "recommended='rs'). Continuing with ASM as requested.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+        original_grid = field.grid
+        target_grid = self.precomputed_grid
+        if target_grid is None and self.use_sampling_planner:
+            target_grid = recommend_nyquist_grid(
+                grid=field.grid,
+                spectrum=field.spectrum,
+                nyquist_factor=self.nyquist_factor,
+                min_padding_factor=self.min_padding_factor,
+            )
+        work_field = _prepare_field_with_grid(field, target_grid)
 
         outputs = []
         for i, wavelength_um in enumerate(work_field.spectrum.wavelengths_um):
@@ -215,32 +334,32 @@ class AutoPropagator(PropagationModel):
 
     asm: ASMPropagator = field(default_factory=ASMPropagator)
     rs: RSPropagator = field(default_factory=RSPropagator)
-    policy_mode: Literal["fast", "balanced", "accurate"] = "balanced"
     equality_tolerance: float = 1e-6
-    rs_cost_ratio_threshold: float = 8.0
-    nyquist_fraction: float = 2.0
+    nyquist_factor: float = 2.0
     min_padding_factor: float = 2.0
     setup_grid: Grid | None = None
     setup_spectrum: Spectrum | None = None
     setup_distance_um: float | None = None
-    precomputed_plan: SamplingPlan | None = None
+    precomputed_grid: Grid | None = None
     precomputed_method: str | None = None
 
     def __post_init__(self) -> None:
-        if self.precomputed_plan is not None:
+        if self.precomputed_grid is not None:
             asm = self.asm
             rs = self.rs
-            if asm.precomputed_plan is None or asm.use_sampling_planner:
+            if asm.precomputed_grid is None or asm.use_sampling_planner:
                 asm = replace(
                     asm,
                     use_sampling_planner=False,
-                    precomputed_plan=self.precomputed_plan,
+                    precomputed_grid=self.precomputed_grid,
+                    warn_on_regime_mismatch=False,
                 )
-            if rs.precomputed_plan is None or rs.use_sampling_planner:
+            if rs.precomputed_grid is None or rs.use_sampling_planner:
                 rs = replace(
                     rs,
                     use_sampling_planner=False,
-                    precomputed_plan=self.precomputed_plan,
+                    precomputed_grid=self.precomputed_grid,
+                    warn_on_regime_mismatch=False,
                 )
             object.__setattr__(self, "asm", asm)
             object.__setattr__(self, "rs", rs)
@@ -249,45 +368,52 @@ class AutoPropagator(PropagationModel):
             self.setup_grid is not None
             and self.setup_spectrum is not None
             and self.setup_distance_um is not None
-            and (self.precomputed_plan is None or self.precomputed_method is None)
+            and (self.precomputed_grid is None or self.precomputed_method is None)
         ):
             if self.setup_distance_um <= 0:
                 raise ValueError("setup_distance_um must be strictly positive")
             self.setup_grid.validate()
             self.setup_spectrum.validate()
-            policy = PropagationPolicy(
-                mode=self.policy_mode,
-                equality_tolerance=self.equality_tolerance,
-                rs_cost_ratio_threshold=self.rs_cost_ratio_threshold,
-            )
-            plan = self.precomputed_plan
-            if plan is None and (self.rs.use_sampling_planner or self.asm.use_sampling_planner):
-                planner = SamplingPlanner(
-                    nyquist_fraction=self.nyquist_fraction,
+
+            precomputed_grid = self.precomputed_grid
+            if precomputed_grid is None and (
+                self.rs.use_sampling_planner or self.asm.use_sampling_planner
+            ):
+                precomputed_grid = recommend_nyquist_grid(
+                    grid=self.setup_grid,
+                    spectrum=self.setup_spectrum,
+                    nyquist_factor=self.nyquist_factor,
                     min_padding_factor=self.min_padding_factor,
                 )
-                plan = planner.recommend_grid(
-                    mask_grid=self.setup_grid,
-                    spectrum=self.setup_spectrum,
-                )
+
             method = self.precomputed_method
             if method is None:
-                method = policy.choose(
+                method = select_propagator_method(
                     grid=self.setup_grid,
                     spectrum=self.setup_spectrum,
                     distance_um=self.setup_distance_um,
-                    plan=plan,
-                ).method
-            object.__setattr__(self, "precomputed_plan", plan)
+                    equality_tolerance=self.equality_tolerance,
+                )
+            object.__setattr__(self, "precomputed_grid", precomputed_grid)
             object.__setattr__(self, "precomputed_method", method)
 
             asm = self.asm
             rs = self.rs
-            if plan is not None:
-                if asm.precomputed_plan is None or asm.use_sampling_planner:
-                    asm = replace(asm, use_sampling_planner=False, precomputed_plan=plan)
-                if rs.precomputed_plan is None or rs.use_sampling_planner:
-                    rs = replace(rs, use_sampling_planner=False, precomputed_plan=plan)
+            if precomputed_grid is not None:
+                if asm.precomputed_grid is None or asm.use_sampling_planner:
+                    asm = replace(
+                        asm,
+                        use_sampling_planner=False,
+                        precomputed_grid=precomputed_grid,
+                        warn_on_regime_mismatch=False,
+                    )
+                if rs.precomputed_grid is None or rs.use_sampling_planner:
+                    rs = replace(
+                        rs,
+                        use_sampling_planner=False,
+                        precomputed_grid=precomputed_grid,
+                        warn_on_regime_mismatch=False,
+                    )
             object.__setattr__(self, "asm", asm)
             object.__setattr__(self, "rs", rs)
 
@@ -296,27 +422,14 @@ class AutoPropagator(PropagationModel):
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
-        plan = self.precomputed_plan
-        if plan is None and (self.rs.use_sampling_planner or self.asm.use_sampling_planner):
-            planner = SamplingPlanner(
-                nyquist_fraction=self.nyquist_fraction,
-                min_padding_factor=self.min_padding_factor,
-            )
-            plan = planner.recommend_grid(mask_grid=field.grid, spectrum=field.spectrum)
-
         method = self.precomputed_method
         if method is None:
-            decision = PropagationPolicy(
-                mode=self.policy_mode,
-                equality_tolerance=self.equality_tolerance,
-                rs_cost_ratio_threshold=self.rs_cost_ratio_threshold,
-            ).choose(
+            method = select_propagator_method(
                 grid=field.grid,
                 spectrum=field.spectrum,
                 distance_um=distance_um,
-                plan=plan,
+                equality_tolerance=self.equality_tolerance,
             )
-            method = decision.method
 
         if method == "asm":
             return self.asm.propagate(field, distance_um=distance_um)

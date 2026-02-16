@@ -19,15 +19,12 @@ from fouriax.optics import (
     Sensor,
     Spectrum,
     ThinLensLayer,
-    build_full_sensing_matrix_dct,
-    dct_basis_synthesis_matrix_2d,
+    critical_distance_um,
     focal_spot_loss,
     mutual_information_loss,
     mutual_information_loss_from_matrix,
     plot_field_evolution,
-    randomized_svd,
-    total_coherence_loss,
-    total_coherence_loss_from_matrix,
+    select_propagator_method,
 )
 
 __all__ = [
@@ -57,5 +54,7 @@ __all__ = [
     "ASMPropagator",
     "RSPropagator",
     "AutoPropagator",
+    "critical_distance_um",
+    "select_propagator_method",
     "plot_field_evolution",
 ]

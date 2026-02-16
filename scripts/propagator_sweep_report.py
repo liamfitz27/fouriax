@@ -20,7 +20,7 @@ from fouriax.optics import (
     Spectrum,
     ThinLensLayer,
 )
-from fouriax.optics.planning import PropagationPolicy, SamplingPlanner
+from fouriax.optics.propagation import critical_distance_um, select_propagator_method
 
 
 def airy_profile(
@@ -101,7 +101,6 @@ def parse_int_list(text: str) -> list[int]:
 
 
 def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
-    policy = PropagationPolicy()
     wavelength_um = args.wavelength_um
     spectrum = Spectrum.from_scalar(wavelength_um)
     records: list[dict[str, float | int | str]] = []
@@ -110,7 +109,8 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
         "asm_base": lambda: ASMPropagator(use_sampling_planner=False),
         "asm_planned_s2": lambda: ASMPropagator(
             use_sampling_planner=True,
-            sampling_planner=SamplingPlanner(nyquist_fraction=2.0, min_padding_factor=2.0),
+            nyquist_factor=2.0,
+            min_padding_factor=2.0,
         ),
         "rs_base": lambda: RSPropagator(use_sampling_planner=False),
     }
@@ -119,17 +119,15 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
         method_factories[key] = (
             lambda sf=s: RSPropagator(
                 use_sampling_planner=True,
-                sampling_planner=SamplingPlanner(
-                    nyquist_fraction=sf,
-                    min_padding_factor=args.padding_factor,
-                ),
+                nyquist_factor=sf,
+                min_padding_factor=args.padding_factor,
             )
         )
 
     for n in args.n_values:
         for dx_um in args.dx_values_um:
             grid = Grid.from_extent(nx=n, ny=n, dx_um=dx_um, dy_um=dx_um)
-            z_crit_um = policy.critical_distance_um(grid=grid, spectrum=spectrum)
+            z_crit_um = critical_distance_um(grid=grid, spectrum=spectrum)
             aperture_diameter_um = args.aperture_fraction * (n * dx_um)
 
             for ratio in args.z_ratios:
@@ -140,7 +138,7 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
                 )
                 field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
                 field_lens = lens.forward(field_in)
-                policy_decision = policy.choose(
+                policy_method = select_propagator_method(
                     grid=grid,
                     spectrum=spectrum,
                     distance_um=distance_um,
@@ -176,7 +174,7 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
                             "z_ratio": ratio,
                             "z_um": distance_um,
                             "z_crit_um": z_crit_um,
-                            "policy_method": policy_decision.method,
+                            "policy_method": policy_method,
                             "method": method_name,
                             "runtime_ms_median": runtime_ms,
                             "mae_vs_airy": mae,

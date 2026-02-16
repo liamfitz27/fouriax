@@ -67,27 +67,19 @@ def _make_identity_sensing_ops(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--device",
-        choices=("cpu", "gpu"),
-        default="cpu",
-        help="Execution device backend.",
-    )
-    parser.add_argument(
-        "--objective",
-        choices=("focal_spot", "mutual_information", "total_coherence"),
-        default="focal_spot",
-    )
-    parser.add_argument("--num-blocks", type=int, default=8)
-    parser.add_argument("--rsvd-k", type=int, default=None)
-    parser.add_argument("--rsvd-k-frac", type=float, default=0.1)
-    args = parser.parse_args()
+    grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
 
-    selected_device = jax.devices(args.device)[0]
-    print(
-        "device="
-        f"{selected_device.platform} kind={getattr(selected_device, 'device_kind', 'unknown')}"
+    distance_um = 1000.0
+    aperture = circular_aperture(grid, diameter_um=48.0)
+    target_xy = (grid.nx // 2, grid.ny // 2)
+    window_px = 2
+
+    propagator = AutoPropagator(
+        setup_grid=grid,
+        setup_spectrum=spectrum,
+        setup_distance_um=distance_um,
     )
 
     with jax.default_device(selected_device):
@@ -192,68 +184,64 @@ def main() -> None:
                 PropagationLayer(model=propagator, distance_um=distance_um),
             )
         )
-        reference_out = reference_module.forward(field_in)
-        reference_intensity = np.asarray(reference_out.intensity())[0]
-        reference_profile = reference_intensity[target_xy[1], :]
+    )
+    reference_out = reference_module.forward(field_in)
+    reference_intensity = np.asarray(reference_out.intensity())[0]
+    reference_profile = reference_intensity[target_xy[1], :]
 
-        out_dir = Path("artifacts")
-        out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path("artifacts")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-        summary = {
-            "steps": steps,
-            "optimizer": "jaxopt+optax_adam",
-            "learning_rate": lr,
-            "objective": args.objective,
-            "num_blocks": args.num_blocks,
-            "rsvd_k": args.rsvd_k,
-            "rsvd_k_frac": args.rsvd_k_frac,
-            "policy_mode": "balanced",
-            "precomputed_method": propagator.precomputed_method,
-            "initial_loss": initial_loss,
-            "final_loss": final_loss,
-            "improvement": initial_loss - final_loss,
-            "target_xy": target_xy,
-            "window_px": window_px,
-            "center_intensity": center_intensity,
-        }
-        with (out_dir / "lens_opt_summary.json").open("w", encoding="utf-8") as f:
-            json.dump(summary, f, indent=2)
+    summary = {
+        "steps": steps,
+        "optimizer": "jaxopt+optax_adam",
+        "learning_rate": lr,
+        "precomputed_method": propagator.precomputed_method,
+        "initial_loss": initial_loss,
+        "final_loss": final_loss,
+        "improvement": initial_loss - final_loss,
+        "target_xy": target_xy,
+        "window_px": window_px,
+        "center_intensity": center_intensity,
+    }
+    with (out_dir / "lens_opt_summary.json").open("w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
 
-        print("saved:", out_dir / "lens_opt_summary.json")
+    print("saved:", out_dir / "lens_opt_summary.json")
 
-        try:
-            import matplotlib.pyplot as plt
-        except Exception:
-            return
+    try:
+        import matplotlib.pyplot as plt
+    except Exception:
+        return
 
-        optimized_phase = np.asarray(2 * jnp.pi * jax.nn.sigmoid(phase_map))
-        fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.0))
+    optimized_phase = np.asarray(2 * jnp.pi * jax.nn.sigmoid(phase_map))
+    fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.0))
 
-        axes[0, 0].plot(history)
-        axes[0, 0].set_title("Loss History")
-        axes[0, 0].set_xlabel("Step")
-        axes[0, 0].set_ylabel("Loss")
-        axes[0, 0].grid(alpha=0.3)
+    axes[0, 0].plot(history)
+    axes[0, 0].set_title("Loss History")
+    axes[0, 0].set_xlabel("Step")
+    axes[0, 0].set_ylabel("Loss")
+    axes[0, 0].grid(alpha=0.3)
 
-        phase_im = axes[0, 1].imshow(optimized_phase, cmap="twilight")
-        axes[0, 1].set_title("Optimized Phase (rad)")
-        plt.colorbar(phase_im, ax=axes[0, 1], fraction=0.046, pad=0.04)
+    phase_im = axes[0, 1].imshow(optimized_phase, cmap="twilight")
+    axes[0, 1].set_title("Optimized Phase (rad)")
+    plt.colorbar(phase_im, ax=axes[0, 1], fraction=0.046, pad=0.04)
 
-        focus_im = axes[1, 0].imshow(final_intensity, cmap="inferno")
-        axes[1, 0].set_title("Optimized 2D Focal Spot")
-        plt.colorbar(focus_im, ax=axes[1, 0], fraction=0.046, pad=0.04)
+    focus_im = axes[1, 0].imshow(final_intensity, cmap="inferno")
+    axes[1, 0].set_title("Optimized 2D Focal Spot")
+    plt.colorbar(focus_im, ax=axes[1, 0], fraction=0.046, pad=0.04)
 
-        axes[1, 1].plot(optimized_profile, label="Optimized")
-        axes[1, 1].plot(reference_profile, label="Hyperbolic-phase reference", linestyle="--")
-        axes[1, 1].set_title("Center Row Profile")
-        axes[1, 1].set_xlabel("x pixel")
-        axes[1, 1].grid(alpha=0.3)
-        axes[1, 1].legend()
+    axes[1, 1].plot(optimized_profile, label="Optimized")
+    axes[1, 1].plot(reference_profile, label="Hyperbolic-phase reference", linestyle="--")
+    axes[1, 1].set_title("Center Row Profile")
+    axes[1, 1].set_xlabel("x pixel")
+    axes[1, 1].grid(alpha=0.3)
+    axes[1, 1].legend()
 
-        fig.tight_layout()
-        fig.savefig(out_dir / "lens_opt_overview.png", dpi=160)
-        print("saved:", out_dir / "lens_opt_overview.png")
-        plt.close(fig)
+    fig.tight_layout()
+    fig.savefig(out_dir / "lens_opt_overview.png", dpi=160)
+    print("saved:", out_dir / "lens_opt_overview.png")
+    plt.close(fig)
 
 
 if __name__ == "__main__":
