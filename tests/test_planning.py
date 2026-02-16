@@ -5,13 +5,11 @@ from fouriax.optics import (
     ASMPropagator,
     Field,
     Grid,
-    PropagationPolicy,
     RSPropagator,
-    SamplingPlan,
-    SamplingPlanner,
     Spectrum,
     ThinLensLayer,
 )
+from fouriax.optics.planning import PropagationPolicy, SamplingPlan, SamplingPlanner
 
 
 def test_critical_distance_uses_expected_formula():
@@ -65,7 +63,7 @@ def test_policy_selects_rs_at_boundary():
 def test_policy_uses_sampling_plan_risk_override():
     grid = Grid.from_extent(nx=128, ny=128, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.5)
-    planner = SamplingPlanner(safety_factor=2.0, min_padding_factor=2.0)
+    planner = SamplingPlanner(nyquist_fraction=2.0, min_padding_factor=2.0)
     plan = planner.recommend_grid(mask_grid=grid, spectrum=spectrum)
     forced_risky_plan = SamplingPlan(
         nx=plan.nx,
@@ -73,7 +71,7 @@ def test_policy_uses_sampling_plan_risk_override():
         dx_um=plan.dx_um,
         dy_um=plan.dy_um,
         min_wavelength_um=plan.min_wavelength_um,
-        safety_factor=plan.safety_factor,
+        nyquist_fraction=plan.nyquist_fraction,
         sampling_ratio=plan.sampling_ratio,
         is_sampling_safe=False,
         warning="forced for test",
@@ -117,7 +115,7 @@ def test_policy_accurate_mode_uses_strict_regime_selection():
 def test_policy_balanced_mode_cost_override_prefers_asm_when_rs_too_expensive():
     grid = Grid.from_extent(nx=128, ny=128, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
-    planner = SamplingPlanner(safety_factor=2.0, min_padding_factor=2.0)
+    planner = SamplingPlanner(nyquist_fraction=2.0, min_padding_factor=2.0)
     plan = planner.recommend_grid(mask_grid=grid, spectrum=spectrum)
     policy = PropagationPolicy(mode="balanced", rs_cost_ratio_threshold=2.0)
     z_crit = policy.critical_distance_um(grid=grid, spectrum=spectrum)
@@ -203,7 +201,7 @@ def test_policy_choice_matches_lower_airy_error_in_near_and_far_regimes():
     policy = PropagationPolicy()
 
     # Use explicit planner instance so both propagators are tested identically.
-    planner = SamplingPlanner(safety_factor=2.0, min_padding_factor=2.0)
+    planner = SamplingPlanner(nyquist_fraction=2.0, min_padding_factor=2.0)
     asm = ASMPropagator(sampling_planner=planner)
     rs = RSPropagator(sampling_planner=planner)
 

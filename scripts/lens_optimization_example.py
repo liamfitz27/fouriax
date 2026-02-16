@@ -13,13 +13,13 @@ import optax
 from jaxopt import OptaxSolver
 
 from fouriax.optics import (
-    ASMPropagator,
+    AmplitudeMaskLayer,
     AutoPropagator,
     Field,
     Grid,
-    PropagationPolicy,
-    RSPropagator,
-    SamplingPlanner,
+    OpticalModule,
+    PhaseMaskLayer,
+    PropagationLayer,
     Spectrum,
     focal_spot_loss,
 )
@@ -42,38 +42,23 @@ def main() -> None:
     target_xy = (grid.nx // 2, grid.ny // 2)
     window_px = 2
 
-    planner = SamplingPlanner(safety_factor=2.0, min_padding_factor=2.0)
-    precomputed_plan = planner.recommend_grid(mask_grid=grid, spectrum=spectrum)
-    policy = PropagationPolicy(mode="balanced")
-    precomputed_decision = policy.choose(
-        grid=grid,
-        spectrum=spectrum,
-        distance_um=distance_um,
-        plan=precomputed_plan,
-    )
     propagator = AutoPropagator(
-        asm=ASMPropagator(
-            use_sampling_planner=False,
-            precomputed_plan=precomputed_plan,
-        ),
-        rs=RSPropagator(
-            use_sampling_planner=False,
-            precomputed_plan=precomputed_plan,
-        ),
-        policy=policy,
-        precomputed_plan=precomputed_plan,
-        precomputed_method=precomputed_decision.method,
+        policy_mode="balanced",
+        setup_grid=grid,
+        setup_spectrum=spectrum,
+        setup_distance_um=distance_um,
     )
-
-    def forward_intensity(phase_map: jnp.ndarray) -> jnp.ndarray:
-        phase_limited = 2 * jnp.pi * jax.nn.sigmoid(phase_map)
-        phase = phase_limited[None, :, :]
-        masked_field = field_in.apply_phase(phase).apply_amplitude(aperture[None, :, :])
-        out = propagator.propagate(masked_field, distance_um=distance_um)
-        return out.intensity()
 
     def loss_fn(phase_map: jnp.ndarray) -> jnp.ndarray:
-        intensity = forward_intensity(phase_map)
+        phase_limited = 2 * jnp.pi * jax.nn.sigmoid(phase_map)
+        module = OpticalModule(
+            layers=(
+                PhaseMaskLayer(phase_map_rad=phase_limited[None, :, :]),
+                AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+                PropagationLayer(model=propagator, distance_um=distance_um),
+            )
+        )
+        intensity = module.forward(field_in).intensity()
         return focal_spot_loss(
             intensity=intensity,
             target_xy=target_xy,
@@ -98,7 +83,15 @@ def main() -> None:
     initial_loss = history[0]
     final_loss = history[-1]
 
-    final_intensity = np.asarray(forward_intensity(phase_map))[0]
+    final_phase_limited = 2 * jnp.pi * jax.nn.sigmoid(phase_map)
+    final_module = OpticalModule(
+        layers=(
+            PhaseMaskLayer(phase_map_rad=final_phase_limited[None, :, :]),
+            AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+            PropagationLayer(model=propagator, distance_um=distance_um),
+        )
+    )
+    final_intensity = np.asarray(final_module.forward(field_in).intensity())[0]
     center_intensity = float(final_intensity[target_xy[1], target_xy[0]])
     optimized_profile = final_intensity[target_xy[1], :]
 
@@ -107,10 +100,14 @@ def main() -> None:
     wavelength_um = float(spectrum.wavelengths_um[0])
     k = 2.0 * jnp.pi / wavelength_um
     hyperbolic_phase = -k * (jnp.sqrt(x_um * x_um + y_um * y_um + distance_um**2) - distance_um)
-    reference_field = field_in.apply_phase(hyperbolic_phase[None, :, :]).apply_amplitude(
-        aperture[None, :, :]
+    reference_module = OpticalModule(
+        layers=(
+            PhaseMaskLayer(phase_map_rad=hyperbolic_phase[None, :, :]),
+            AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+            PropagationLayer(model=propagator, distance_um=distance_um),
+        )
     )
-    reference_out = propagator.propagate(reference_field, distance_um=distance_um)
+    reference_out = reference_module.forward(field_in)
     reference_intensity = np.asarray(reference_out.intensity())[0]
     reference_profile = reference_intensity[target_xy[1], :]
 
@@ -121,8 +118,8 @@ def main() -> None:
         "steps": steps,
         "optimizer": "jaxopt+optax_adam",
         "learning_rate": lr,
-        "precomputed_method": precomputed_decision.method,
-        "policy_reason": precomputed_decision.reason,
+        "policy_mode": "balanced",
+        "precomputed_method": propagator.precomputed_method,
         "initial_loss": initial_loss,
         "final_loss": final_loss,
         "improvement": initial_loss - final_loss,
