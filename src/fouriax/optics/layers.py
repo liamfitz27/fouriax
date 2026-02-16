@@ -27,7 +27,8 @@ def _expand_map(
     if arr.ndim == 3:
         if arr.shape[1:] != (field.grid.ny, field.grid.nx):
             raise ValueError(
-                f"{name} shape mismatch: got {arr.shape[1:]}, expected {(field.grid.ny, field.grid.nx)}"
+                f"{name} shape mismatch: got {arr.shape[1:]}, "
+                f"expected {(field.grid.ny, field.grid.nx)}"
             )
         if arr.shape[0] not in (1, field.spectrum.size):
             raise ValueError(

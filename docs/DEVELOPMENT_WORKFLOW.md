@@ -113,7 +113,60 @@ pytest
 4. Address review/CI feedback.
 5. Merge PR after checks pass.
 
-## 4) Why this matters for fouriax
+## 4) Pre-commit Hooks (Local Enforcement)
+
+Config file:
+- `.pre-commit-config.yaml`
+
+What runs:
+- On commit: basic repository hygiene + `ruff` + `mypy`.
+- On push: `pytest`.
+
+Setup:
+```bash
+pip install -e ".[dev]"
+pre-commit install
+pre-commit install --hook-type pre-push
+```
+
+Repo helper setup (recommended):
+```bash
+scripts/dev_setup.sh
+```
+This creates/updates `.venv`, installs `.[dev]`, and installs pre-commit hooks.
+
+Manual run:
+```bash
+pre-commit run --all-files
+```
+
+Local lint gate (CI parity for lint/type checks):
+```bash
+scripts/lint_local.sh
+```
+
+Why this helps:
+- catches common issues before code leaves your machine,
+- reduces CI churn from avoidable failures,
+- partially compensates when GitHub branch protection is limited.
+
+## 5) Closed Feature Cycle (GitHub Actions)
+
+```mermaid
+flowchart TD
+    A[Create feature branch from main] --> B[Implement code + tests]
+    B --> C[Local hooks run on commit/push]
+    C --> D[Push branch to origin]
+    D --> E[Open PR into main]
+    E --> F[GitHub Actions CI runs lint, mypy, pytest]
+    F -->|Fail| G[Fix issues on feature branch]
+    G --> D
+    F -->|Pass| H[Review and conversation resolution]
+    H --> I[Merge PR to main]
+    I --> J[Delete feature branch]
+```
+
+## 6) Why this matters for fouriax
 
 fouriax targets differentiable numerical code where small regressions can be subtle.
 
@@ -122,3 +175,16 @@ This workflow helps by:
 - flagging interface/typing mistakes early (`mypy`),
 - validating numerical behavior against references (`pytest` + SciPy),
 - ensuring `main` remains reliable through enforced PR + CI gates.
+
+## 7) Visual Verification
+
+For manual visual inspection, use scripts rather than tests.
+
+- Example benchmark plot script:
+  - `scripts/lens_benchmark_plot.py`
+- Run:
+```bash
+PYTHONPATH=src python scripts/lens_benchmark_plot.py
+```
+- Output image:
+  - `artifacts/lens_benchmark_profile.png`

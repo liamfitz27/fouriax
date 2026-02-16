@@ -3,8 +3,8 @@ import numpy as np
 import pytest
 
 from fouriax.optics import (
-    ASMPropagator,
     AmplitudeMaskLayer,
+    ASMPropagator,
     ComplexMaskLayer,
     Field,
     FieldReadout,
@@ -102,5 +102,13 @@ def test_intensity_sensor_and_field_readout_representations():
     assert real_imag.shape == (2, 4, 4, 2)
     assert amp_phase.shape == (2, 4, 4, 2)
 
-    np.testing.assert_allclose(np.asarray(real_imag[..., 0]), np.asarray(field.data.real), atol=1e-6)
-    np.testing.assert_allclose(np.asarray(real_imag[..., 1]), np.asarray(field.data.imag), atol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(real_imag[..., 0]),
+        np.asarray(field.data.real),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(real_imag[..., 1]),
+        np.asarray(field.data.imag),
+        atol=1e-6,
+    )

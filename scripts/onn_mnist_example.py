@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 import urllib.request
 from pathlib import Path
@@ -200,9 +199,6 @@ def main() -> None:
     module = OpticalModule(layers=tuple(plot_layers), sensor=detector_sensor)
     sample_idx = 0
     test_image = jnp.asarray(x_test[sample_idx], dtype=jnp.float32)
-    test_label = int(y_test[sample_idx])
-    sample_logits = np.asarray(logits_single(phase_params, test_image))
-    pred_label = int(np.argmax(sample_logits))
     sample_field = Field(
         data=test_image[None, :, :].astype(jnp.complex64),
         grid=work_grid,

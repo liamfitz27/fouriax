@@ -231,9 +231,17 @@ class AutoPropagator(PropagationModel):
             asm = self.asm
             rs = self.rs
             if asm.precomputed_plan is None or asm.use_sampling_planner:
-                asm = replace(asm, use_sampling_planner=False, precomputed_plan=self.precomputed_plan)
+                asm = replace(
+                    asm,
+                    use_sampling_planner=False,
+                    precomputed_plan=self.precomputed_plan,
+                )
             if rs.precomputed_plan is None or rs.use_sampling_planner:
-                rs = replace(rs, use_sampling_planner=False, precomputed_plan=self.precomputed_plan)
+                rs = replace(
+                    rs,
+                    use_sampling_planner=False,
+                    precomputed_plan=self.precomputed_plan,
+                )
             object.__setattr__(self, "asm", asm)
             object.__setattr__(self, "rs", rs)
 

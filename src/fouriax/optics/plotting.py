@@ -111,7 +111,12 @@ def plot_field_evolution(
             items.append(
                 (
                     f"After Propagation {prop_idx}",
-                    _field_map(output, mode=mode, wavelength_idx=wavelength_idx, log_scale=log_scale),
+                    _field_map(
+                        output,
+                        mode=mode,
+                        wavelength_idx=wavelength_idx,
+                        log_scale=log_scale,
+                    ),
                     "twilight" if mode == "phase" else "inferno",
                 )
             )
