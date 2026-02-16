@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import argparse
 import time
 import urllib.request
 from pathlib import Path
+from typing import Sequence
 
 import jax
 import jax.image
@@ -71,7 +73,37 @@ def resize_images_to_grid(images: np.ndarray, grid: Grid) -> np.ndarray:
     return np.asarray(resized, dtype=np.float32)
 
 
-def main() -> None:
+def build_onn_module(
+    params_mask: jnp.ndarray,
+    work_grid: Grid,
+    propagator: AutoPropagator,
+    detector_sensor: IntensitySensor,
+    distance_um: float,
+) -> OpticalModule:
+    layers = []
+    for i in range(params_mask.shape[0]):
+        upsampled_latent = jax.image.resize(
+            params_mask[i],
+            shape=(work_grid.ny, work_grid.nx),
+            method="linear",
+        )
+        bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
+        layers.append(PhaseMaskLayer(phase_map_rad=bounded_phase))
+        layers.append(PropagationLayer(model=propagator, distance_um=distance_um))
+    module = OpticalModule(layers=tuple(layers), sensor=detector_sensor)
+    return module
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default="cpu",
+        help="Execution device backend.",
+    )
+    args = parser.parse_args(argv)
+
     epochs = 10
     batch_size = 64
     learning_rate = 0.2
@@ -83,141 +115,139 @@ def main() -> None:
     test_samples = 100
     seed = 0
 
-    input_grid = Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
-    spectrum = Spectrum.from_scalar(1.55)
-    propagator = AutoPropagator(
-        policy_mode="balanced",
-        setup_grid=input_grid,
-        setup_spectrum=spectrum,
-        setup_distance_um=distance_um,
-        nyquist_fraction=nyquist_fraction,
+    selected_device = jax.devices(args.device)[0]
+    print(
+        "device="
+        f"{selected_device.platform} kind={getattr(selected_device, 'device_kind', 'unknown')}"
     )
-    work_grid = propagator.precomputed_plan.grid
-    mask_nx = work_grid.nx // phase_mask_downsample
-    mask_ny = work_grid.ny // phase_mask_downsample
-    mask_grid = Grid.from_extent(
-        nx=mask_nx,
-        ny=mask_ny,
-        dx_um=(work_grid.nx * work_grid.dx_um) / mask_nx,
-        dy_um=(work_grid.ny * work_grid.dy_um) / mask_ny,
-    )
-    detector_masks = build_detector_bank(work_grid)
-    detector_sensor = IntensitySensor(detector_masks=detector_masks, sum_wavelengths=True)
+    with jax.default_device(selected_device):
+        input_grid = Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
+        spectrum = Spectrum.from_scalar(1.55)
+        propagator = AutoPropagator(
+            policy_mode="balanced",
+            setup_grid=input_grid,
+            setup_spectrum=spectrum,
+            setup_distance_um=distance_um,
+            nyquist_fraction=nyquist_fraction,
+        )
+        work_grid = propagator.precomputed_plan.grid
+        mask_nx = work_grid.nx // phase_mask_downsample
+        mask_ny = work_grid.ny // phase_mask_downsample
+        mask_grid = Grid.from_extent(
+            nx=mask_nx,
+            ny=mask_ny,
+            dx_um=(work_grid.nx * work_grid.dx_um) / mask_nx,
+            dy_um=(work_grid.ny * work_grid.dy_um) / mask_ny,
+        )
+        detector_masks = build_detector_bank(work_grid)
+        detector_sensor = IntensitySensor(detector_masks=detector_masks, sum_wavelengths=True)
 
-    x_train, y_train, x_test, y_test = load_mnist(Path("artifacts/data/mnist.npz"))
-    x_train = x_train[:train_samples]
-    y_train = y_train[:train_samples]
-    x_test = x_test[:test_samples]
-    y_test = y_test[:test_samples]
-    x_train = resize_images_to_grid(x_train, work_grid)
-    x_test = resize_images_to_grid(x_test, work_grid)
+        x_train, y_train, x_test, y_test = load_mnist(Path("artifacts/data/mnist.npz"))
+        x_train = x_train[:train_samples]
+        y_train = y_train[:train_samples]
+        x_test = x_test[:test_samples]
+        y_test = y_test[:test_samples]
+        x_train = resize_images_to_grid(x_train, work_grid)
+        x_test = resize_images_to_grid(x_test, work_grid)
 
-    key = jax.random.PRNGKey(seed)
-    phase_params = 0.05 * jax.random.normal(
-        key,
-        (num_phase_layers, mask_grid.ny, mask_grid.nx),
-        dtype=jnp.float32,
-    )
+        key = jax.random.PRNGKey(seed)
+        phase_params = 0.05 * jax.random.normal(
+            key,
+            (num_phase_layers, mask_grid.ny, mask_grid.nx),
+            dtype=jnp.float32,
+        )
 
-    def logits_single(params_mask: jnp.ndarray, image_2d: jnp.ndarray) -> jnp.ndarray:
-        layers = []
-        for i in range(params_mask.shape[0]):
-            upsampled_latent = jax.image.resize(
-                params_mask[i],
-                shape=(work_grid.ny, work_grid.nx),
-                method="linear",
+        def logits_single(params_mask: jnp.ndarray, image_2d: jnp.ndarray) -> jnp.ndarray:
+            module = build_onn_module(
+                params_mask,
+                work_grid,
+                propagator,
+                detector_sensor,
+                distance_um=distance_um,
             )
-            bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
-            layers.append(PhaseMaskLayer(phase_map_rad=bounded_phase))
-            layers.append(PropagationLayer(model=propagator, distance_um=distance_um))
-        module = OpticalModule(layers=tuple(layers), sensor=detector_sensor)
-        field = Field(
-            data=image_2d[None, :, :].astype(jnp.complex64),
+            field = Field(
+                data=image_2d[None, :, :].astype(jnp.complex64),
+                grid=work_grid,
+                spectrum=spectrum,
+            )
+            return module.measure(field)
+
+        logits_batch = jax.vmap(logits_single, in_axes=(None, 0))
+
+        def batch_loss(params: jnp.ndarray, images: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
+            logits = logits_batch(params, images)
+            log_probs = logits - jax.scipy.special.logsumexp(logits, axis=1, keepdims=True)
+            nll = -log_probs[jnp.arange(labels.shape[0]), labels]
+            return jnp.mean(nll)
+
+        def batch_accuracy(params: jnp.ndarray, images: np.ndarray, labels: np.ndarray) -> float:
+            logits = np.asarray(logits_batch(params, jnp.asarray(images)))
+            pred = np.argmax(logits, axis=1)
+            return float(np.mean(pred == labels))
+
+        grad_fn = jax.grad(batch_loss)
+        optimizer = optax.adam(learning_rate=learning_rate)
+        opt_state = optimizer.init(phase_params)
+
+        num_batches = int(np.ceil(len(x_train) / batch_size))
+        for epoch in range(1, epochs + 1):
+            start_time = time.time()
+            perm = np.random.default_rng(seed + epoch).permutation(len(x_train))
+            x_train = x_train[perm]
+            y_train = y_train[perm]
+
+            epoch_losses: list[float] = []
+            for bi in range(num_batches):
+                lo = bi * batch_size
+                hi = min((bi + 1) * batch_size, len(x_train))
+                xb = jnp.asarray(x_train[lo:hi], dtype=jnp.float32)
+                yb = jnp.asarray(y_train[lo:hi], dtype=jnp.int32)
+
+                grads = grad_fn(phase_params, xb, yb)
+                updates, opt_state = optimizer.update(grads, opt_state, phase_params)
+                phase_params = optax.apply_updates(phase_params, updates)
+
+                loss = batch_loss(phase_params, xb, yb)
+                epoch_losses.append(float(loss))
+
+            train_acc = batch_accuracy(phase_params, x_train, y_train)
+            test_acc = batch_accuracy(phase_params, x_test, y_test)
+            print(
+                f"epoch={epoch:02d}/{epochs} "
+                f"loss={np.mean(epoch_losses):.4f} "
+                f"train_acc={train_acc:.4f} "
+                f"test_acc={test_acc:.4f} "
+                f"elapsed={time.time() - start_time:.2f}s "
+            )
+
+        module = build_onn_module(
+            phase_params,
+            work_grid,
+            propagator,
+            detector_sensor,
+            distance_um=distance_um,
+        )
+        sample_idx = 0
+        test_image = jnp.asarray(x_test[sample_idx], dtype=jnp.float32)
+        sample_field = Field(
+            data=test_image[None, :, :].astype(jnp.complex64),
             grid=work_grid,
             spectrum=spectrum,
         )
-        return module.measure(field)
 
-    logits_batch = jax.vmap(logits_single, in_axes=(None, 0))
-
-    def batch_loss(params: jnp.ndarray, images: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
-        logits = logits_batch(params, images)
-        log_probs = logits - jax.scipy.special.logsumexp(logits, axis=1, keepdims=True)
-        nll = -log_probs[jnp.arange(labels.shape[0]), labels]
-        return jnp.mean(nll)
-
-    def batch_accuracy(params: jnp.ndarray, images: np.ndarray, labels: np.ndarray) -> float:
-        logits = np.asarray(logits_batch(params, jnp.asarray(images)))
-        pred = np.argmax(logits, axis=1)
-        return float(np.mean(pred == labels))
-
-    grad_fn = jax.grad(batch_loss)
-    optimizer = optax.adam(learning_rate=learning_rate)
-    opt_state = optimizer.init(phase_params)
-
-    num_batches = int(np.ceil(len(x_train) / batch_size))
-    for epoch in range(1, epochs + 1):
-        start_time = time.time()
-        perm = np.random.default_rng(seed + epoch).permutation(len(x_train))
-        x_train = x_train[perm]
-        y_train = y_train[perm]
-
-        epoch_losses: list[float] = []
-        for bi in range(num_batches):
-            lo = bi * batch_size
-            hi = min((bi + 1) * batch_size, len(x_train))
-            xb = jnp.asarray(x_train[lo:hi], dtype=jnp.float32)
-            yb = jnp.asarray(y_train[lo:hi], dtype=jnp.int32)
-
-            grads = grad_fn(phase_params, xb, yb)
-            updates, opt_state = optimizer.update(grads, opt_state, phase_params)
-            phase_params = optax.apply_updates(phase_params, updates)
-
-            loss = batch_loss(phase_params, xb, yb)
-            epoch_losses.append(float(loss))
-
-        train_acc = batch_accuracy(phase_params, x_train, y_train)
-        test_acc = batch_accuracy(phase_params, x_test, y_test)
-        print(
-            f"epoch={epoch:02d}/{epochs} "
-            f"loss={np.mean(epoch_losses):.4f} "
-            f"train_acc={train_acc:.4f} "
-            f"test_acc={test_acc:.4f} "
-            f"elapsed={time.time() - start_time:.2f}s "
+        # Plot field evolution
+        fig_field, _ = plot_field_evolution(
+            module=module,
+            field_in=sample_field,
+            mode="intensity",
+            wavelength_idx=0,
+            log_scale=False,
         )
-
-    plot_layers = []
-    for i in range(phase_params.shape[0]):
-        upsampled_latent = jax.image.resize(
-            phase_params[i],
-            shape=(work_grid.ny, work_grid.nx),
-            method="linear",
-        )
-        bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
-        plot_layers.append(PhaseMaskLayer(phase_map_rad=bounded_phase))
-        plot_layers.append(PropagationLayer(model=propagator, distance_um=distance_um))
-    module = OpticalModule(layers=tuple(plot_layers), sensor=detector_sensor)
-    sample_idx = 0
-    test_image = jnp.asarray(x_test[sample_idx], dtype=jnp.float32)
-    sample_field = Field(
-        data=test_image[None, :, :].astype(jnp.complex64),
-        grid=work_grid,
-        spectrum=spectrum,
-    )
-
-    # Plot field evolution
-    fig_field, _ = plot_field_evolution(
-        module=module,
-        field_in=sample_field,
-        mode="intensity",
-        wavelength_idx=0,
-        log_scale=False,
-    )
-    fig_field.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
-    out_dir = Path("artifacts")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    fig_field.savefig(out_dir / "onn_mnist_field_evolution.png", dpi=160)
-    print("saved:", out_dir / "onn_mnist_field_evolution.png")
+        fig_field.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
+        out_dir = Path("artifacts")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fig_field.savefig(out_dir / "onn_mnist_field_evolution.png", dpi=160)
+        print("saved:", out_dir / "onn_mnist_field_evolution.png")
 
 
 if __name__ == "__main__":
