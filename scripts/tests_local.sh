@@ -16,4 +16,7 @@ echo "Running Ruff..."
 echo "Running mypy..."
 "$PY" -m mypy "$ROOT_DIR/src"
 
-echo "Lint checks passed."
+echo "Running pytest..."
+PYTHONPATH="$ROOT_DIR/src" "$PY" -m pytest -q
+
+echo "Quality checks passed."

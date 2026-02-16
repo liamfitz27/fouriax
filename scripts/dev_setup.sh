@@ -18,6 +18,6 @@ fi
 
 cat <<'EOF'
 Dev environment ready.
-Run local lint checks with:
-  scripts/lint_local.sh
+Run local quality checks with:
+  scripts/tests_local.sh
 EOF

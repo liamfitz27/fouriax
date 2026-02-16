@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -32,7 +32,7 @@ def _field_map(field: Field, mode: str, wavelength_idx: int, log_scale: bool) ->
     raise ValueError("mode must be one of: intensity, phase, amplitude")
 
 
-def _sensor_map(sensor_output: np.ndarray, sensor) -> np.ndarray:
+def _sensor_map(sensor_output: Any, sensor: Any) -> np.ndarray:
     arr = np.asarray(sensor_output)
     if hasattr(sensor, "detector_masks"):
         masks = np.asarray(sensor.detector_masks, dtype=np.float32)
@@ -42,7 +42,7 @@ def _sensor_map(sensor_output: np.ndarray, sensor) -> np.ndarray:
                 values = np.sum(values, axis=0)
             values = values.reshape(-1)
             if values.size == masks.shape[0]:
-                return np.sum(masks * values[:, None, None], axis=0)
+                return np.asarray(np.sum(masks * values[:, None, None], axis=0), dtype=np.float32)
 
     arr = np.squeeze(arr)
     if arr.ndim == 0:
@@ -54,7 +54,7 @@ def _sensor_map(sensor_output: np.ndarray, sensor) -> np.ndarray:
     return np.asarray(arr[0])
 
 
-def _phase_mask_image(layer, wavelength_idx: int) -> np.ndarray:
+def _phase_mask_image(layer: Any, wavelength_idx: int) -> np.ndarray:
     if not hasattr(layer, "phase_map_rad"):
         raise ValueError("layer does not expose phase_map_rad")
     phase = np.asarray(layer.phase_map_rad)
@@ -68,7 +68,7 @@ def _phase_mask_image(layer, wavelength_idx: int) -> np.ndarray:
                 f"wavelength_idx out of range for phase_map_rad: got {wavelength_idx}, "
                 f"size {phase.shape[0]}"
             )
-        return phase[wavelength_idx]
+        return np.asarray(phase[wavelength_idx], dtype=np.float32)
     raise ValueError("phase_map_rad must be scalar, 2D, or 3D")
 
 
