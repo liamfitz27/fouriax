@@ -16,7 +16,7 @@ from fouriax.optics import (
     Spectrum,
     ThinLensLayer,
 )
-from fouriax.optics.planning import PropagationPolicy
+from fouriax.optics.propagation import critical_distance_um, select_propagator_method
 
 
 def airy_profile(
@@ -51,7 +51,6 @@ def run_case(
     spectrum: Spectrum,
     aperture_diameter_um: float,
     distance_um: float,
-    policy: PropagationPolicy,
 ) -> dict[str, float | str | np.ndarray]:
     wavelength_um = float(spectrum.wavelengths_um[0])
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
@@ -80,7 +79,8 @@ def run_case(
     mae_asm = float(np.mean(np.abs(profile_asm - airy)))
     mae_rs = float(np.mean(np.abs(profile_rs - airy)))
     best_method = "asm" if mae_asm <= mae_rs else "rs"
-    decision = policy.choose(grid=grid, spectrum=spectrum, distance_um=distance_um)
+    z_crit_um = critical_distance_um(grid=grid, spectrum=spectrum)
+    method = select_propagator_method(grid=grid, spectrum=spectrum, distance_um=distance_um)
 
     return {
         "r_um": r_compare,
@@ -90,8 +90,8 @@ def run_case(
         "mae_asm": mae_asm,
         "mae_rs": mae_rs,
         "z_um": distance_um,
-        "z_crit_um": decision.critical_distance_um,
-        "policy": decision.method,
+        "z_crit_um": z_crit_um,
+        "policy": method,
         "best": best_method,
     }
 
@@ -107,8 +107,7 @@ def main() -> None:
     grid = Grid.from_extent(nx=256, ny=256, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     aperture_diameter_um = 30.0
-    policy = PropagationPolicy()
-    z_crit_um = policy.critical_distance_um(grid=grid, spectrum=spectrum)
+    z_crit_um = critical_distance_um(grid=grid, spectrum=spectrum)
 
     cases = [
         ("Near-field regime (z < z_crit)", 0.5 * z_crit_um),
@@ -120,7 +119,6 @@ def main() -> None:
             spectrum=spectrum,
             aperture_diameter_um=aperture_diameter_um,
             distance_um=z_um,
-            policy=policy,
         )
         for _, z_um in cases
     ]

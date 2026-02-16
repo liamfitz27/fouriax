@@ -43,7 +43,6 @@ def main() -> None:
     window_px = 2
 
     propagator = AutoPropagator(
-        policy_mode="balanced",
         setup_grid=grid,
         setup_spectrum=spectrum,
         setup_distance_um=distance_um,
@@ -118,7 +117,6 @@ def main() -> None:
         "steps": steps,
         "optimizer": "jaxopt+optax_adam",
         "learning_rate": lr,
-        "policy_mode": "balanced",
         "precomputed_method": propagator.precomputed_method,
         "initial_loss": initial_loss,
         "final_loss": final_loss,

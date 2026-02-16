@@ -19,8 +19,10 @@ from fouriax.optics import (
     Sensor,
     Spectrum,
     ThinLensLayer,
+    critical_distance_um,
     focal_spot_loss,
     plot_field_evolution,
+    select_propagator_method,
 )
 
 __all__ = [
@@ -43,5 +45,7 @@ __all__ = [
     "ASMPropagator",
     "RSPropagator",
     "AutoPropagator",
+    "critical_distance_um",
+    "select_propagator_method",
     "plot_field_evolution",
 ]
