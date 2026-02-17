@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -12,7 +11,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 
-from fouriax.core.fft import fftconvolve
 from fouriax.optics import (
     AmplitudeMaskLayer,
     AutoPropagator,
@@ -23,8 +21,6 @@ from fouriax.optics import (
     PropagationLayer,
     Spectrum,
     focal_spot_loss,
-    mutual_information_loss,
-    total_coherence_loss,
 )
 
 
@@ -35,44 +31,14 @@ def circular_aperture(grid: Grid, diameter_um: float) -> jnp.ndarray:
     return (r2 <= radius * radius).astype(jnp.float32)
 
 
-def _make_identity_sensing_ops(
-    kernel_2d: jnp.ndarray,
-) -> tuple[callable, callable, int, int]:
-    ny, nx = kernel_2d.shape
-    n_coeffs = ny * nx
-    m_measurement = n_coeffs
-    kernel_adj = jnp.flip(jnp.conjugate(kernel_2d), axis=(0, 1))
-
-    def a_matvec(v: jnp.ndarray) -> jnp.ndarray:
-        image = v.reshape((ny, nx))
-        measured = fftconvolve(
-            image,
-            kernel_2d,
-            mode="same",
-            axes=(-2, -1),
-        )
-        return jnp.ravel(jnp.real(measured))
-
-    def a_rmatvec(v: jnp.ndarray) -> jnp.ndarray:
-        measured = v.reshape((ny, nx))
-        backprojected = fftconvolve(
-            measured,
-            kernel_adj,
-            mode="same",
-            axes=(-2, -1),
-        )
-        return jnp.ravel(jnp.real(backprojected))
-
-    return a_matvec, a_rmatvec, m_measurement, n_coeffs
-
-
 def main() -> None:
     grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
 
     distance_um = 1000.0
-    aperture = circular_aperture(grid, diameter_um=48.0)
+    aperture_diameter_um = 48.0
+    aperture = circular_aperture(grid, diameter_um=aperture_diameter_um)
     target_xy = (grid.nx // 2, grid.ny // 2)
     window_px = 2
 
@@ -82,111 +48,69 @@ def main() -> None:
         setup_distance_um=distance_um,
     )
 
-    with jax.default_device(selected_device):
-        grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
-        spectrum = Spectrum.from_scalar(0.532)
-        field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
-
-        distance_um = 1000.0
-        aperture = circular_aperture(grid, diameter_um=48.0)
-        target_xy = (grid.nx // 2, grid.ny // 2)
-        window_px = 2
-
-        propagator = AutoPropagator(
-            policy_mode="balanced",
-            setup_grid=grid,
-            setup_spectrum=spectrum,
-            setup_distance_um=distance_um,
-        )
-
-        def loss_fn(phase_map: jnp.ndarray) -> jnp.ndarray:
-            phase_limited = 2 * jnp.pi * jax.nn.sigmoid(phase_map)
-            module = OpticalModule(
-                layers=(
-                    PhaseMaskLayer(phase_map_rad=phase_limited[None, :, :]),
-                    AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
-                    PropagationLayer(model=propagator, distance_um=distance_um),
-                )
-            )
-            intensity = module.forward(field_in).intensity()
-            kernel_2d = intensity[0]
-            if args.objective == "focal_spot":
-                return focal_spot_loss(
-                    intensity=intensity,
-                    target_xy=target_xy,
-                    window_px=window_px,
-                )
-
-            a_matvec, a_rmatvec, m_measurement, n_coeffs = _make_identity_sensing_ops(
-                kernel_2d
-            )
-            if args.objective == "mutual_information":
-                return mutual_information_loss(
-                    a_matvec=a_matvec,
-                    a_rmatvec=a_rmatvec,
-                    m_measurement=m_measurement,
-                    n_coeffs=n_coeffs,
-                    key=jax.random.PRNGKey(0),
-                    rsvd_k=args.rsvd_k,
-                    rsvd_k_frac=args.rsvd_k_frac,
-                    p=10,
-                    q_iter=0,
-                )
-            return total_coherence_loss(
-                a_matvec=a_matvec,
-                n_coeffs=n_coeffs,
-                num_blocks=args.num_blocks,
-            )
-
-        key = jax.random.PRNGKey(0)
-        phase_map = 0.1 * jax.random.normal(key, (grid.ny, grid.nx))
-        lr = 0.05
-        steps = 60
-        optimizer = optax.adam(lr)
-        opt_state = optimizer.init(phase_map)
-        value_and_grad = jax.value_and_grad(loss_fn)
-
-        history: list[float] = []
-        for step in range(steps):
-            loss, grad = value_and_grad(phase_map)
-            updates, opt_state = optimizer.update(grad, opt_state, phase_map)
-            phase_map = optax.apply_updates(phase_map, updates)
-            history.append(float(loss))
-            if step % 20 == 0 or step == steps - 1:
-                print(f"step={step:03d} loss={float(loss):.6f}")
-
-        initial_loss = history[0]
-        final_loss = history[-1]
-
-        final_phase_limited = 2 * jnp.pi * jax.nn.sigmoid(phase_map)
-        final_module = OpticalModule(
+    def loss_fn(raw_phase_map: jnp.ndarray) -> jnp.ndarray:
+        phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase_map)
+        module = OpticalModule(
             layers=(
-                PhaseMaskLayer(phase_map_rad=final_phase_limited[None, :, :]),
+                PhaseMaskLayer(phase_map_rad=phase_limited[None, :, :]),
                 AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
                 PropagationLayer(model=propagator, distance_um=distance_um),
             )
         )
-        final_intensity = np.asarray(final_module.forward(field_in).intensity())[0]
-        center_intensity = float(final_intensity[target_xy[1], target_xy[0]])
-        optimized_profile = final_intensity[target_xy[1], :]
-
-        # Reference: phase profile for ideal spherical wavefront convergence at distance_um.
-        x_um, y_um = grid.spatial_grid()
-        wavelength_um = float(spectrum.wavelengths_um[0])
-        k = 2.0 * jnp.pi / wavelength_um
-        hyperbolic_phase = -k * (
-            jnp.sqrt(x_um * x_um + y_um * y_um + distance_um**2) - distance_um
+        intensity = module.forward(field_in).intensity()
+        return focal_spot_loss(
+            intensity=intensity,
+            target_xy=target_xy,
+            window_px=window_px,
         )
-        reference_module = OpticalModule(
-            layers=(
-                PhaseMaskLayer(phase_map_rad=hyperbolic_phase[None, :, :]),
-                AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
-                PropagationLayer(model=propagator, distance_um=distance_um),
-            )
+
+    key = jax.random.PRNGKey(0)
+    phase_map = 0.1 * jax.random.normal(key, (grid.ny, grid.nx))
+
+    lr = 0.05
+    steps = 60
+    optimizer = optax.adam(lr)
+    opt_state = optimizer.init(phase_map)
+    value_and_grad = jax.value_and_grad(loss_fn)
+
+    history: list[float] = []
+    for step in range(steps):
+        loss, grad = value_and_grad(phase_map)
+        updates, opt_state = optimizer.update(grad, opt_state, phase_map)
+        phase_map = optax.apply_updates(phase_map, updates)
+        history.append(float(loss))
+        if step % 20 == 0 or step == steps - 1:
+            print(f"step={step:03d} loss={float(loss):.6f}")
+
+    initial_loss = history[0]
+    final_loss = history[-1]
+
+    final_phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(phase_map)
+    final_module = OpticalModule(
+        layers=(
+            PhaseMaskLayer(phase_map_rad=final_phase_limited[None, :, :]),
+            AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+            PropagationLayer(model=propagator, distance_um=distance_um),
         )
     )
-    reference_out = reference_module.forward(field_in)
-    reference_intensity = np.asarray(reference_out.intensity())[0]
+    final_intensity = np.asarray(final_module.forward(field_in).intensity())[0]
+    center_intensity = float(final_intensity[target_xy[1], target_xy[0]])
+    optimized_profile = final_intensity[target_xy[1], :]
+
+    x_um, y_um = grid.spatial_grid()
+    wavelength_um = float(spectrum.wavelengths_um[0])
+    k = 2.0 * jnp.pi / wavelength_um
+    hyperbolic_phase = -k * (
+        jnp.sqrt(x_um * x_um + y_um * y_um + distance_um**2) - distance_um
+    )
+    reference_module = OpticalModule(
+        layers=(
+            PhaseMaskLayer(phase_map_rad=hyperbolic_phase[None, :, :]),
+            AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+            PropagationLayer(model=propagator, distance_um=distance_um),
+        )
+    )
+    reference_intensity = np.asarray(reference_module.forward(field_in).intensity())[0]
     reference_profile = reference_intensity[target_xy[1], :]
 
     out_dir = Path("artifacts")
@@ -194,7 +118,7 @@ def main() -> None:
 
     summary = {
         "steps": steps,
-        "optimizer": "jaxopt+optax_adam",
+        "optimizer": "optax_adam",
         "learning_rate": lr,
         "precomputed_method": propagator.precomputed_method,
         "initial_loss": initial_loss,
@@ -214,7 +138,7 @@ def main() -> None:
     except Exception:
         return
 
-    optimized_phase = np.asarray(2 * jnp.pi * jax.nn.sigmoid(phase_map))
+    optimized_phase = np.asarray(2.0 * jnp.pi * jax.nn.sigmoid(phase_map))
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.0))
 
     axes[0, 0].plot(history)
@@ -233,6 +157,7 @@ def main() -> None:
 
     axes[1, 1].plot(optimized_profile, label="Optimized")
     axes[1, 1].plot(reference_profile, label="Hyperbolic-phase reference", linestyle="--")
+    axes[1, 1].axvline(target_xy[0], color="black", linestyle=":", linewidth=1.2, label="Target x")
     axes[1, 1].set_title("Center Row Profile")
     axes[1, 1].set_xlabel("x pixel")
     axes[1, 1].grid(alpha=0.3)
