@@ -19,6 +19,7 @@ from fouriax.optics.losses import (
     total_coherence_loss,
     total_coherence_loss_from_matrix,
 )
+from fouriax.optics.meta_atoms import MetaAtomInterpolationLayer, MetaAtomLibrary
 from fouriax.optics.model import Field, Grid, Spectrum
 from fouriax.optics.plotting import plot_field_evolution
 from fouriax.optics.propagation import (
@@ -54,6 +55,8 @@ __all__ = [
     "total_coherence_loss_from_matrix",
     "mutual_information_loss",
     "mutual_information_loss_from_matrix",
+    "MetaAtomLibrary",
+    "MetaAtomInterpolationLayer",
     "ASMPropagator",
     "RSPropagator",
     "AutoPropagator",
