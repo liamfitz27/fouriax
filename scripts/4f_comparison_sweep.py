@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from fouriax.optics import (
-    ASMPropagator,
     AmplitudeMaskLayer,
+    ASMPropagator,
     Field,
     Grid,
     IntensitySensor,
@@ -44,7 +44,11 @@ def _make_object_field(grid: Grid, spectrum: Spectrum) -> Field:
     return Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(obj[None, :, :])
 
 
-def _sampling_matched_focal_length_um(grid: Grid, wavelength_um: float, medium_index: float) -> float:
+def _sampling_matched_focal_length_um(
+    grid: Grid,
+    wavelength_um: float,
+    medium_index: float,
+) -> float:
     return float(medium_index * grid.nx * (grid.dx_um**2) / wavelength_um)
 
 

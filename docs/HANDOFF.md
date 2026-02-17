@@ -43,37 +43,45 @@
 - `tests/test_propagation.py` (or new `tests/test_kspace_layers.py`): target location for unit tests of diagonal operators.
 
 ## Runbook
+- Setup (creates/updates `.venv`):
+```bash
+scripts/dev_setup.sh
+```
+- Activate environment:
+```bash
+source .venv/bin/activate
+```
 - Full tests:
 ```bash
-PYTHONPATH=src pytest -q
+pytest -q
 ```
 - Optical module tests:
 ```bash
-PYTHONPATH=src pytest -q tests/test_optical_module.py
+pytest -q tests/test_optical_module.py
 ```
 - Lens optimization test:
 ```bash
-PYTHONPATH=src pytest -q tests/test_lens_optimization.py
+pytest -q tests/test_lens_optimization.py
 ```
 - Lens optimization script:
 ```bash
-MPLBACKEND=Agg PYTHONPATH=src python scripts/lens_optimization_example.py
+MPLBACKEND=Agg python scripts/lens_optimization_example.py
 ```
 - ONN script:
 ```bash
-MPLBACKEND=Agg PYTHONPATH=src python scripts/onn_mnist_example.py
+MPLBACKEND=Agg python scripts/onn_mnist_example.py
 ```
 - Meta-atom tests:
 ```bash
-PYTHONPATH=src pytest -q tests/test_meta_atoms.py
+pytest -q tests/test_meta_atoms.py
 ```
 - Meta-atom script:
 ```bash
-MPLBACKEND=Agg PYTHONPATH=src python scripts/metaatom_optimization_example.py
+MPLBACKEND=Agg python scripts/metaatom_optimization_example.py
 ```
 - Propagation-focused tests (recommended during k-space work):
 ```bash
-PYTHONPATH=src pytest -q tests/test_propagation.py tests/test_optical_module.py
+pytest -q tests/test_propagation.py tests/test_optical_module.py
 ```
 
 ## Next Tasks
@@ -100,8 +108,9 @@ Use this prompt in a fresh instance:
 ```text
 Work in /Users/liam/fouriax on branch feat/metaatom-grid-optimization.
 First read docs/HANDOFF.md and docs/PROJECT_STATUS.md.
+Use the project virtual environment (`scripts/dev_setup.sh`, then `source .venv/bin/activate`).
 Primary goal: implement k-space diagonal operators (phase/amplitude), uniform-slab k-space propagators, and effective specular sheet operators.
 Immediately resolve NA policy architecture and hybrid-domain contract boundaries before expanding new layer types.
-Run PYTHONPATH=src pytest -q tests/test_optical_module.py tests/test_propagation_selection.py tests/test_field_domain.py tests/test_na_schedule.py before finishing.
+Run pytest -q tests/test_optical_module.py tests/test_propagation_selection.py tests/test_field_domain.py tests/test_na_schedule.py before finishing.
 Do not modify unrelated files (docs/DEVELOPMENT_WORKFLOW.md, .pre-commit-config.yaml, artifacts/) unless explicitly requested.
 ```
