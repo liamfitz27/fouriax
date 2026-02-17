@@ -4,8 +4,17 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VENV_DIR="$ROOT_DIR/.venv"
 
+# Prefer Python 3.12 for dependency compatibility; allow override via PYTHON_BIN.
+if [[ -z "${PYTHON_BIN:-}" ]]; then
+  if command -v python3.12 >/dev/null 2>&1; then
+    PYTHON_BIN="python3.12"
+  else
+    PYTHON_BIN="python3"
+  fi
+fi
+
 if [[ ! -d "$VENV_DIR" ]]; then
-  python3 -m venv "$VENV_DIR"
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
