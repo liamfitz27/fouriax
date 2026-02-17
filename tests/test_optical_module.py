@@ -10,10 +10,12 @@ from fouriax.optics import (
     FieldReadout,
     Grid,
     IntensitySensor,
+    KPhaseMaskLayer,
     OpticalModule,
     PhaseMaskLayer,
     PropagationLayer,
     Spectrum,
+    ThinLensLayer,
 )
 
 
@@ -112,3 +114,27 @@ def test_intensity_sensor_and_field_readout_representations():
         np.asarray(field.data.imag),
         atol=1e-6,
     )
+
+
+def test_optical_module_na_schedule_uses_spatial_grid_and_k_layer_diameter():
+    grid = Grid.from_extent(nx=40, ny=20, dx_um=1.0, dy_um=1.0)  # min diameter = 20 um
+    spectrum = Spectrum.from_scalar(0.532)
+    field = Field.plane_wave(grid=grid, spectrum=spectrum)
+
+    module = OpticalModule(
+        layers=(
+            PhaseMaskLayer(phase_map_rad=0.0),  # spatial stop from grid extent
+            PropagationLayer(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            KPhaseMaskLayer(phase_map_rad=0.0, aperture_diameter_um=8.0),  # explicit k-stop
+            PropagationLayer(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            ThinLensLayer(focal_length_um=20.0, aperture_diameter_um=6.0),
+        ),
+        auto_apply_na=True,
+        medium_index=1.0,
+    )
+
+    schedule = module.na_schedule(field)
+    assert 1 in schedule
+    assert 3 in schedule
+    assert schedule[1] > 0.0
+    assert schedule[3] > 0.0

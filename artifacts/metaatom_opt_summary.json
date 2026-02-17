@@ -1,0 +1,22 @@
+{
+  "sweep_file": "data/meta_atoms/square_pillar_0p7um_cell_sweep_results.npz",
+  "steps": 180,
+  "learning_rate": 0.1,
+  "selected_wavelength_um": 1.3039309978485107,
+  "selected_frequency_hz": 229914357810849.12,
+  "side_length_range_um": [
+    0.10000000149011612,
+    0.6499999761581421
+  ],
+  "optimized_side_length_um_mean": 0.3737410604953766,
+  "optimized_side_length_um_min": 0.2542894780635834,
+  "optimized_side_length_um_max": 0.5550990104675293,
+  "initial_loss": -2.4586570262908936,
+  "final_loss": -9.481060028076172,
+  "optimized_transmission_abs": 0.8642792051601274,
+  "optimized_transmission_phase_rad": 1.4291879774947776,
+  "final_center_intensity": 9.44411563873291,
+  "reference_center_intensity": 14.21403980255127,
+  "distance_um": 100.0,
+  "precomputed_method": "rs"
+}

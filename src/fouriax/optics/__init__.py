@@ -1,9 +1,13 @@
 """Core optics data models."""
 
+from fouriax.optics.bandlimit import build_na_mask
 from fouriax.optics.interfaces import OpticalLayer, PropagationModel, Sensor
 from fouriax.optics.layers import (
     AmplitudeMaskLayer,
     ComplexMaskLayer,
+    KAmplitudeMaskLayer,
+    KComplexMaskLayer,
+    KPhaseMaskLayer,
     OpticalModule,
     PhaseMaskLayer,
     PropagationLayer,
@@ -25,6 +29,7 @@ from fouriax.optics.plotting import plot_field_evolution
 from fouriax.optics.propagation import (
     ASMPropagator,
     AutoPropagator,
+    KSpacePropagator,
     RSPropagator,
     critical_distance_um,
     recommend_nyquist_grid,
@@ -36,6 +41,7 @@ __all__ = [
     "Field",
     "Grid",
     "Spectrum",
+    "build_na_mask",
     "OpticalLayer",
     "Sensor",
     "PropagationModel",
@@ -44,6 +50,9 @@ __all__ = [
     "PhaseMaskLayer",
     "AmplitudeMaskLayer",
     "ComplexMaskLayer",
+    "KPhaseMaskLayer",
+    "KAmplitudeMaskLayer",
+    "KComplexMaskLayer",
     "ThinLensLayer",
     "IntensitySensor",
     "FieldReadout",
@@ -59,6 +68,7 @@ __all__ = [
     "MetaAtomInterpolationLayer",
     "ASMPropagator",
     "RSPropagator",
+    "KSpacePropagator",
     "AutoPropagator",
     "critical_distance_um",
     "select_propagator_method",

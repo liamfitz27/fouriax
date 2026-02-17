@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
 
 from fouriax.core.fft import fftconvolve
+from fouriax.optics.bandlimit import build_na_mask
 from fouriax.optics.interfaces import PropagationModel
 from fouriax.optics.model import Field, Grid, Spectrum
 
@@ -143,7 +144,14 @@ def _prepare_field_with_grid(field: Field, target_grid: Grid | None) -> Field:
         ],
         axis=0,
     )
-    return Field(data=data, grid=target_grid, spectrum=field.spectrum)
+    return Field(
+        data=data,
+        grid=target_grid,
+        spectrum=field.spectrum,
+        domain=field.domain,
+        kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+        ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+    )
 
 
 def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
@@ -162,7 +170,14 @@ def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
         ],
         axis=0,
     )
-    return Field(data=data, grid=original_grid, spectrum=field.spectrum)
+    return Field(
+        data=data,
+        grid=original_grid,
+        spectrum=field.spectrum,
+        domain=field.domain,
+        kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+        ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+    )
 
 
 @dataclass(frozen=True)
@@ -199,6 +214,7 @@ class RSPropagator(PropagationModel):
         return h.astype(jnp.complex64)
 
     def propagate(self, field: Field, distance_um: float) -> Field:
+        field = field.to_spatial()
         self.validate_for(field)
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
@@ -244,7 +260,14 @@ class RSPropagator(PropagationModel):
             outputs.append(propagated * area_um2)
 
         data = jnp.stack(outputs, axis=0)
-        propagated_field = Field(data=data, grid=work_field.grid, spectrum=work_field.spectrum)
+        propagated_field = Field(
+            data=data,
+            grid=work_field.grid,
+            spectrum=work_field.spectrum,
+            domain=work_field.domain,
+            kx_pixel_size_cyc_per_um=work_field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=work_field.ky_pixel_size_cyc_per_um,
+        )
         return _restore_to_original_grid(propagated_field, original_grid)
 
 
@@ -262,6 +285,8 @@ class ASMPropagator(PropagationModel):
     precomputed_grid: Grid | None = None
     warn_on_regime_mismatch: bool = True
     equality_tolerance: float = 1e-6
+    medium_index: float = 1.0
+    na_limit: float | None = None
 
     def transfer_function(
         self,
@@ -271,17 +296,32 @@ class ASMPropagator(PropagationModel):
     ) -> jnp.ndarray:
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
+        if self.medium_index <= 0:
+            raise ValueError("medium_index must be strictly positive")
+        if self.na_limit is not None and self.na_limit <= 0:
+            raise ValueError("na_limit must be strictly positive when provided")
 
         fx, fy = field.grid.frequency_grid()
         wl = jnp.asarray(wavelength_um, dtype=jnp.float32)
         z = jnp.asarray(distance_um, dtype=jnp.float32)
-        k = 2.0 * jnp.pi / wl
+        n = jnp.asarray(self.medium_index, dtype=jnp.float32)
+        k = 2.0 * jnp.pi * n / wl
 
-        argument = 1.0 - (wl * fx) ** 2 - (wl * fy) ** 2
+        argument = 1.0 - (wl * fx / n) ** 2 - (wl * fy / n) ** 2
         kz = k * jnp.sqrt(argument.astype(jnp.complex64))
-        return jnp.exp(1j * kz * z).astype(jnp.complex64)
+        transfer = jnp.exp(1j * kz * z).astype(jnp.complex64)
+        if self.na_limit is None:
+            return transfer
+        na_mask = build_na_mask(
+            field.grid,
+            wavelength_um=float(wavelength_um),
+            na_limit=float(self.na_limit),
+            medium_index=float(self.medium_index),
+        )
+        return transfer * na_mask.astype(jnp.complex64)
 
     def propagate(self, field: Field, distance_um: float) -> Field:
+        field = field.to_spatial()
         self.validate_for(field)
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
@@ -322,8 +362,81 @@ class ASMPropagator(PropagationModel):
             outputs.append(propagated)
 
         data = jnp.stack(outputs, axis=0)
-        propagated_field = Field(data=data, grid=work_field.grid, spectrum=work_field.spectrum)
+        propagated_field = Field(
+            data=data,
+            grid=work_field.grid,
+            spectrum=work_field.spectrum,
+            domain=work_field.domain,
+            kx_pixel_size_cyc_per_um=work_field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=work_field.ky_pixel_size_cyc_per_um,
+        )
         return _restore_to_original_grid(propagated_field, original_grid)
+
+
+@dataclass(frozen=True)
+class KSpacePropagator(PropagationModel):
+    """
+    k-space diagonal propagator using angular-spectrum phase advance.
+
+    All length quantities use micrometers (um).
+    """
+
+    refractive_index: float = 1.0
+    na_limit: float | None = None
+
+    def transfer_function(
+        self,
+        field: Field,
+        wavelength_um: float,
+        distance_um: float,
+    ) -> jnp.ndarray:
+        if distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive")
+        if self.refractive_index <= 0:
+            raise ValueError("refractive_index must be strictly positive")
+        if self.na_limit is not None and self.na_limit <= 0:
+            raise ValueError("na_limit must be strictly positive when provided")
+
+        fx, fy = field.grid.frequency_grid()
+        wl = jnp.asarray(wavelength_um, dtype=jnp.float32)
+        z = jnp.asarray(distance_um, dtype=jnp.float32)
+        n = jnp.asarray(self.refractive_index, dtype=jnp.float32)
+        k = 2.0 * jnp.pi * n / wl
+        argument = 1.0 - (wl * fx / n) ** 2 - (wl * fy / n) ** 2
+        propagating = argument >= 0.0
+        kz_real = k * jnp.sqrt(jnp.maximum(argument, 0.0))
+        transfer = jnp.exp(1j * kz_real * z).astype(jnp.complex64)
+        transfer = jnp.where(propagating, transfer, 0.0 + 0.0j)
+        if self.na_limit is None:
+            return transfer
+        na_mask = build_na_mask(
+            field.grid,
+            wavelength_um=float(wavelength_um),
+            na_limit=float(self.na_limit),
+            medium_index=float(self.refractive_index),
+        )
+        return transfer * na_mask.astype(jnp.complex64)
+
+    def propagate(self, field: Field, distance_um: float) -> Field:
+        field = field.to_kspace()
+        self.validate_for(field)
+        if distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive")
+
+        outputs = []
+        for i, wavelength_um in enumerate(field.spectrum.wavelengths_um):
+            transfer = self.transfer_function(field, wavelength_um, distance_um)
+            outputs.append(field.data[i] * transfer)
+
+        data = jnp.stack(outputs, axis=0)
+        return Field(
+            data=data,
+            grid=field.grid,
+            spectrum=field.spectrum,
+            domain="kspace",
+            kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+        )
 
 
 @dataclass(frozen=True)
