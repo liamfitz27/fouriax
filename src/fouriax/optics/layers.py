@@ -77,11 +77,27 @@ class PropagationLayer(OpticalLayer):
 class OpticalModule(OpticalLayer):
     """Composable sequence of optical layers."""
 
-    layers: tuple[OpticalLayer, ...]
+    layers: tuple[OpticalLayer | PropagationModel, ...]
     sensor: Sensor | None = None
     auto_apply_na: bool = False
     medium_index: float = 1.0
     na_fallback_to_effective: bool = False
+
+    @staticmethod
+    def _propagation_layer_view(layer: OpticalLayer | PropagationModel) -> PropagationLayer | None:
+        if isinstance(layer, PropagationLayer):
+            return layer
+        if isinstance(layer, PropagationModel):
+            distance_um = getattr(layer, "distance_um", None)
+            if distance_um is None:
+                raise ValueError(
+                    "PropagationModel used directly in OpticalModule.layers must define "
+                    "distance_um, or be wrapped in PropagationLayer"
+                )
+            if float(distance_um) <= 0:
+                raise ValueError("distance_um must be strictly positive")
+            return PropagationLayer(model=layer, distance_um=float(distance_um))
+        return None
 
     @staticmethod
     def _spatial_grid_diameter_um(field: Field) -> float:
@@ -112,10 +128,11 @@ class OpticalModule(OpticalLayer):
         z_um = 0.0
         stops: list[tuple[float, float, float]] = []
         for layer in self.layers:
-            if isinstance(layer, PropagationLayer):
-                z_um += layer.distance_um
+            propagation_layer = self._propagation_layer_view(layer)
+            if propagation_layer is not None:
+                z_um += propagation_layer.distance_um
                 continue
-            stop_diameter_um = self._layer_stop_diameter_um(layer, field)
+            stop_diameter_um = self._layer_stop_diameter_um(cast(OpticalLayer, layer), field)
             if stop_diameter_um is None:
                 continue
             radius_um = float(stop_diameter_um) / 2.0
@@ -126,11 +143,12 @@ class OpticalModule(OpticalLayer):
         z_um = 0.0
         segments: dict[int, tuple[float, float]] = {}
         for i, layer in enumerate(self.layers):
-            if isinstance(layer, PropagationLayer):
-                if layer.distance_um <= 0:
+            propagation_layer = self._propagation_layer_view(layer)
+            if propagation_layer is not None:
+                if propagation_layer.distance_um <= 0:
                     raise ValueError("distance_um must be strictly positive")
                 z0 = z_um
-                z1 = z_um + float(layer.distance_um)
+                z1 = z_um + float(propagation_layer.distance_um)
                 segments[i] = (z0, z1)
                 z_um = z1
         return segments
@@ -194,24 +212,103 @@ class OpticalModule(OpticalLayer):
         return {i: effective for i in segments}
 
     @staticmethod
-    def _layer_with_na_if_supported(layer: OpticalLayer, na_limit: float | None) -> OpticalLayer:
-        if not isinstance(layer, PropagationLayer):
-            return layer
+    def _layer_with_na_if_supported(
+        layer: OpticalLayer | PropagationModel,
+        na_limit: float | None,
+    ) -> OpticalLayer | PropagationModel:
+        propagation_layer = OpticalModule._propagation_layer_view(layer)
+        if propagation_layer is None:
+            return cast(OpticalLayer | PropagationModel, layer)
         if na_limit is None:
-            return layer
-        model = layer.model
+            return propagation_layer
+        model = propagation_layer.model
         if not hasattr(model, "na_limit"):
-            return layer
-        updated_model = replace(cast(Any, model), na_limit=na_limit)
-        return replace(layer, model=updated_model)
+            return propagation_layer
+        existing_na = cast(Any, model).na_limit
+        merged_na = na_limit if existing_na is None else min(float(existing_na), float(na_limit))
+        updated_model = replace(cast(Any, model), na_limit=merged_na)
+        return replace(propagation_layer, model=updated_model)
 
-    def forward(self, field: Field) -> Field:
+    @staticmethod
+    def _field_with_domain(field: Field, domain: Literal["spatial", "kspace"]) -> Field:
+        if field.domain == domain:
+            return field
+        return Field(
+            data=field.data,
+            grid=field.grid,
+            spectrum=field.spectrum,
+            domain=domain,
+            kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+        )
+
+    @staticmethod
+    def _layer_output_domain(
+        layer: OpticalLayer | PropagationModel,
+        current_domain: Literal["spatial", "kspace"],
+    ) -> Literal["spatial", "kspace"]:
+        propagation_layer = OpticalModule._propagation_layer_view(layer)
+        if propagation_layer is not None:
+            from fouriax.optics.propagation import ASMPropagator, KSpacePropagator, RSPropagator
+
+            if isinstance(propagation_layer.model, (ASMPropagator, RSPropagator)):
+                return "spatial"
+            if isinstance(propagation_layer.model, KSpacePropagator):
+                return "kspace"
+            return current_domain
+        if isinstance(layer, (PhaseMaskLayer, AmplitudeMaskLayer, ComplexMaskLayer, ThinLensLayer)):
+            return "spatial"
+        if isinstance(layer, (KPhaseMaskLayer, KAmplitudeMaskLayer, KComplexMaskLayer)):
+            return "kspace"
+        return current_domain
+
+    @staticmethod
+    def _resolve_auto_propagator_layer(
+        layer: OpticalLayer | PropagationModel,
+        field: Field,
+    ) -> OpticalLayer | PropagationModel:
+        propagation_layer = OpticalModule._propagation_layer_view(layer)
+        if propagation_layer is None:
+            return cast(OpticalLayer | PropagationModel, layer)
+        from fouriax.optics.propagation import AutoPropagator
+
+        if not isinstance(propagation_layer.model, AutoPropagator):
+            return propagation_layer
+        resolved_model = propagation_layer.model.resolved_model(
+            field=field,
+            distance_um=propagation_layer.distance_um,
+        )
+        return replace(propagation_layer, model=resolved_model)
+
+    def planned_layers(self, field: Field) -> tuple[OpticalLayer, ...]:
+        """
+        Build a concrete per-layer execution plan for this input field.
+
+        This resolves AutoPropagator layers to concrete propagation models up front
+        and injects per-segment NA limits before executing data-path operations.
+        """
         self.validate_for(field)
         schedule = self.na_schedule(field) if self.auto_apply_na else {}
-        output = field
+        plan: list[OpticalLayer] = []
+        current_domain: Literal["spatial", "kspace"] = field.domain
         for i, layer in enumerate(self.layers):
-            layer_for_step = self._layer_with_na_if_supported(layer, schedule.get(i))
-            output = layer_for_step.forward(output)
+            planning_field = self._field_with_domain(field, current_domain)
+            resolved = self._resolve_auto_propagator_layer(layer, planning_field)
+            resolved = self._layer_with_na_if_supported(resolved, schedule.get(i))
+            propagation_layer = self._propagation_layer_view(resolved)
+            plan.append(
+                propagation_layer
+                if propagation_layer is not None
+                else cast(OpticalLayer, resolved)
+            )
+            current_domain = self._layer_output_domain(resolved, current_domain)
+        return tuple(plan)
+
+    def forward(self, field: Field) -> Field:
+        plan = self.planned_layers(field)
+        output = field
+        for layer in plan:
+            output = layer.forward(output)
         return output
 
     def measure(self, field: Field) -> jnp.ndarray:
@@ -223,20 +320,22 @@ class OpticalModule(OpticalLayer):
 
     def trace(self, field: Field, include_input: bool = True) -> list[Field]:
         """Return intermediate fields through the module."""
-        self.validate_for(field)
-        schedule = self.na_schedule(field) if self.auto_apply_na else {}
+        plan = self.planned_layers(field)
         output = field
         states: list[Field] = [output] if include_input else []
-        for i, layer in enumerate(self.layers):
-            layer_for_step = self._layer_with_na_if_supported(layer, schedule.get(i))
-            output = layer_for_step.forward(output)
+        for layer in plan:
+            output = layer.forward(output)
             states.append(output)
         return states
 
     def parameters(self) -> dict[str, jnp.ndarray]:
         params: dict[str, jnp.ndarray] = {}
         for i, layer in enumerate(self.layers):
-            for key, value in layer.parameters().items():
+            propagation_layer = self._propagation_layer_view(layer)
+            layer_obj = (
+                propagation_layer if propagation_layer is not None else cast(OpticalLayer, layer)
+            )
+            for key, value in layer_obj.parameters().items():
                 params[f"layer_{i}.{key}"] = value
         return params
 

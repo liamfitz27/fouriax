@@ -102,7 +102,7 @@ def plot_field_evolution(
     output = field_in
     prop_idx = 0
     pending_phase: np.ndarray | None = None
-    for layer in module.layers:
+    for layer in module.planned_layers(field_in):
         output = layer.forward(output)
         if hasattr(layer, "phase_map_rad"):
             pending_phase = _phase_mask_image(layer, wavelength_idx=wavelength_idx)

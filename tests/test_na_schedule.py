@@ -77,7 +77,10 @@ def test_layer_na_injection_only_applies_to_models_with_na_limit():
     asm_layer = PropagationLayer(
         model=ASMPropagator(use_sampling_planner=False, na_limit=None), distance_um=5.0
     )
-    rs_layer = PropagationLayer(model=RSPropagator(use_sampling_planner=False), distance_um=5.0)
+    rs_layer = PropagationLayer(
+        model=RSPropagator(use_sampling_planner=False, na_limit=None),
+        distance_um=5.0,
+    )
 
     asm_updated = OpticalModule._layer_with_na_if_supported(asm_layer, 0.25)
     rs_updated = OpticalModule._layer_with_na_if_supported(rs_layer, 0.25)
@@ -85,4 +88,60 @@ def test_layer_na_injection_only_applies_to_models_with_na_limit():
     assert isinstance(asm_updated, PropagationLayer)
     assert isinstance(rs_updated, PropagationLayer)
     assert asm_updated.model.na_limit == 0.25
-    assert not hasattr(rs_updated.model, "na_limit")
+    assert rs_updated.model.na_limit == 0.25
+
+
+def test_layer_na_injection_keeps_stricter_existing_limit():
+    asm_layer = PropagationLayer(
+        model=ASMPropagator(use_sampling_planner=False, na_limit=0.15),
+        distance_um=5.0,
+    )
+    rs_layer = PropagationLayer(
+        model=RSPropagator(use_sampling_planner=False, na_limit=0.12),
+        distance_um=5.0,
+    )
+
+    asm_updated = OpticalModule._layer_with_na_if_supported(asm_layer, 0.25)
+    rs_updated = OpticalModule._layer_with_na_if_supported(rs_layer, 0.25)
+
+    assert isinstance(asm_updated, PropagationLayer)
+    assert isinstance(rs_updated, PropagationLayer)
+    assert np.isclose(asm_updated.model.na_limit, 0.15)
+    assert np.isclose(rs_updated.model.na_limit, 0.12)
+
+
+def _out_of_band_energy_ratio(field: Field, wavelength_index: int, na_limit: float) -> float:
+    k_field = field.to_kspace().data[wavelength_index]
+    mask = build_na_mask(
+        field.grid,
+        wavelength_um=float(field.spectrum.wavelengths_um[wavelength_index]),
+        na_limit=na_limit,
+        medium_index=1.0,
+    )
+    power = jnp.abs(k_field) ** 2
+    in_band = jnp.sum(power * mask)
+    out_band = jnp.sum(power * (1.0 - mask))
+    return float(out_band / (in_band + out_band + 1e-12))
+
+
+def test_rs_propagator_na_limit_suppresses_out_of_band_spectrum():
+    grid = Grid.from_extent(nx=64, ny=64, dx_um=0.6, dy_um=0.6)
+    spectrum = Spectrum.from_scalar(0.532)
+    field = Field.plane_wave(grid=grid, spectrum=spectrum)
+    na_limit = 0.1
+
+    rs_unlimited = RSPropagator(use_sampling_planner=False, medium_index=1.0, na_limit=None)
+    rs_limited = RSPropagator(use_sampling_planner=False, medium_index=1.0, na_limit=na_limit)
+
+    out_unlimited = rs_unlimited.propagate(field, distance_um=20.0)
+    out_limited = rs_limited.propagate(field, distance_um=20.0)
+
+    ratio_unlimited = _out_of_band_energy_ratio(
+        out_unlimited,
+        wavelength_index=0,
+        na_limit=na_limit,
+    )
+    ratio_limited = _out_of_band_energy_ratio(out_limited, wavelength_index=0, na_limit=na_limit)
+
+    assert ratio_limited < ratio_unlimited
+    assert ratio_limited < 1e-3

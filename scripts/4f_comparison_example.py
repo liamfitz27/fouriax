@@ -10,13 +10,12 @@ import numpy as np
 
 from fouriax.optics import (
     AmplitudeMaskLayer,
-    ASMPropagator,
     Field,
     Grid,
     IntensitySensor,
     KAmplitudeMaskLayer,
     OpticalModule,
-    PropagationLayer,
+    Propagator,
     Spectrum,
     ThinLensLayer,
 )
@@ -48,7 +47,16 @@ def _sampling_matched_focal_length_um(
     wavelength_um: float,
     medium_index: float,
 ) -> float:
-    return float(medium_index * grid.nx * (grid.dx_um**2) / wavelength_um)
+    # Sampling-matched 4f requires matching along x and y:
+    # f = n * Nx * dx^2 / lambda = n * Ny * dy^2 / lambda.
+    f_x = medium_index * grid.nx * (grid.dx_um**2) / wavelength_um
+    f_y = medium_index * grid.ny * (grid.dy_um**2) / wavelength_um
+    if not np.isclose(f_x, f_y, rtol=1e-6, atol=1e-9):
+        raise ValueError(
+            "sampling-matched focal length requires Nx*dx^2 ~= Ny*dy^2; "
+            f"got f_x={f_x:.6f} um, f_y={f_y:.6f} um"
+        )
+    return float(f_x)
 
 
 def _kspace_stop_mask(grid: Grid, *, wavelength_um: float, na: float) -> jnp.ndarray:
@@ -115,13 +123,13 @@ def main() -> None:
     input_aperture = _spatial_circular_aperture(grid, LENS_APERTURE_UM)
 
     # (1) Physical 4f path.
-    asm_4f = ASMPropagator(use_sampling_planner=True, medium_index=N_MEDIUM, na_limit=None)
+    propagator_4f = Propagator(mode="auto", distance_um=f_um)
     module_4f = OpticalModule(
         layers=(
             ThinLensLayer(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
-            PropagationLayer(model=asm_4f, distance_um=f_um),
+            propagator_4f,
             AmplitudeMaskLayer(amplitude_map=spatial_fourier_stop),
-            PropagationLayer(model=asm_4f, distance_um=f_um),
+            propagator_4f,
             ThinLensLayer(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
         ),
         sensor=IntensitySensor(sum_wavelengths=True),
@@ -137,7 +145,8 @@ def main() -> None:
             KAmplitudeMaskLayer(amplitude_map=k_stop, aperture_diameter_um=2.0 * f_um * NA_STOP),
         ),
         sensor=IntensitySensor(sum_wavelengths=True),
-        auto_apply_na=True,
+        # No propagation segments in this surrogate stack; NA is explicit in k_stop.
+        auto_apply_na=False,
         medium_index=N_MEDIUM,
         na_fallback_to_effective=False,
     )
@@ -154,6 +163,7 @@ def main() -> None:
     out_k = np.asarray(module_k.measure(field_in))
 
     print("=== 4f Comparison ===")
+    print(f"Propagator(mode='auto') precomputed_method={propagator_4f.precomputed_method}")
     print(f"f_um={f_um:.6f}, NA={NA_STOP:.4f}, lens_aperture_um={LENS_APERTURE_UM:.1f}")
     print(
         "MSE: "
