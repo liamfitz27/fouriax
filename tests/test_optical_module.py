@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -5,15 +6,20 @@ import pytest
 from fouriax.optics import (
     AmplitudeMaskLayer,
     ASMPropagator,
+    AutoPropagator,
     ComplexMaskLayer,
     Field,
     FieldReadout,
     Grid,
     IntensitySensor,
+    KPhaseMaskLayer,
+    KSpacePropagator,
     OpticalModule,
     PhaseMaskLayer,
     PropagationLayer,
+    RSPropagator,
     Spectrum,
+    ThinLensLayer,
 )
 
 
@@ -112,3 +118,132 @@ def test_intensity_sensor_and_field_readout_representations():
         np.asarray(field.data.imag),
         atol=1e-6,
     )
+
+
+def test_optical_module_na_schedule_uses_spatial_grid_and_k_layer_diameter():
+    grid = Grid.from_extent(nx=40, ny=20, dx_um=1.0, dy_um=1.0)  # min diameter = 20 um
+    spectrum = Spectrum.from_scalar(0.532)
+    field = Field.plane_wave(grid=grid, spectrum=spectrum)
+
+    module = OpticalModule(
+        layers=(
+            PhaseMaskLayer(phase_map_rad=0.0),  # spatial stop from grid extent
+            PropagationLayer(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            KPhaseMaskLayer(phase_map_rad=0.0, aperture_diameter_um=8.0),  # explicit k-stop
+            PropagationLayer(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            ThinLensLayer(focal_length_um=20.0, aperture_diameter_um=6.0),
+        ),
+        auto_apply_na=True,
+        medium_index=1.0,
+    )
+
+    schedule = module.na_schedule(field)
+    assert 1 in schedule
+    assert 3 in schedule
+    assert schedule[1] > 0.0
+    assert schedule[3] > 0.0
+
+
+def test_hybrid_spatial_k_stack_tracks_gradients():
+    grid = Grid.from_extent(nx=16, ny=16, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+
+    x, y = grid.spatial_grid()
+    input_amp = jnp.exp(-((x + 1.5) ** 2 + (y - 0.5) ** 2) / (2.0 * 3.0**2))
+    field_in = Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(input_amp[None, :, :])
+    target = jnp.exp(-((x - 2.0) ** 2 + (y + 1.0) ** 2) / (2.0 * 2.4**2))
+
+    phase_spatial_init = 0.08 * (x / jnp.max(jnp.abs(x))) + 0.03 * (y / jnp.max(jnp.abs(y)))
+    phase_k_init = 0.05 * jnp.sin(0.4 * x) - 0.04 * jnp.cos(0.3 * y)
+    params = {
+        "phase_spatial": phase_spatial_init.astype(jnp.float32),
+        "phase_k": phase_k_init.astype(jnp.float32),
+    }
+
+    def loss_fn(p: dict[str, jnp.ndarray]) -> jnp.ndarray:
+        module = OpticalModule(
+            layers=(
+                PhaseMaskLayer(phase_map_rad=p["phase_spatial"]),
+                PropagationLayer(
+                    model=ASMPropagator(
+                        use_sampling_planner=False,
+                        medium_index=1.0,
+                        na_limit=None,
+                    ),
+                    distance_um=12.0,
+                ),
+                KPhaseMaskLayer(
+                    phase_map_rad=p["phase_k"],
+                    aperture_diameter_um=12.0,
+                ),
+                PropagationLayer(
+                    model=ASMPropagator(
+                        use_sampling_planner=False,
+                        medium_index=1.0,
+                        na_limit=None,
+                    ),
+                    distance_um=8.0,
+                ),
+            ),
+            sensor=IntensitySensor(sum_wavelengths=True),
+            auto_apply_na=True,
+            medium_index=1.0,
+            na_fallback_to_effective=False,
+        )
+        measured = module.measure(field_in)
+        return jnp.mean((measured - target) ** 2)
+
+    grads = jax.grad(loss_fn)(params)
+    assert grads["phase_spatial"].shape == (grid.ny, grid.nx)
+    assert grads["phase_k"].shape == (grid.ny, grid.nx)
+    assert bool(jnp.all(jnp.isfinite(grads["phase_spatial"])))
+    assert bool(jnp.all(jnp.isfinite(grads["phase_k"])))
+    assert float(jnp.linalg.norm(grads["phase_spatial"])) > 1e-10
+    assert float(jnp.linalg.norm(grads["phase_k"])) > 1e-10
+
+
+def test_optical_module_plans_auto_propagator_from_current_domain():
+    grid = Grid.from_extent(nx=32, ny=32, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
+    distance_um = 15.0
+
+    auto = AutoPropagator(
+        asm=ASMPropagator(use_sampling_planner=False),
+        rs=RSPropagator(use_sampling_planner=False),
+        kspace=KSpacePropagator(refractive_index=1.0),
+        distance_um=distance_um,
+    )
+
+    module_auto = OpticalModule(
+        layers=(
+            KPhaseMaskLayer(phase_map_rad=0.0, aperture_diameter_um=10.0),
+            auto,
+            PhaseMaskLayer(phase_map_rad=0.0),
+        )
+    )
+    plan = module_auto.planned_layers(field_in)
+    assert isinstance(plan[1], PropagationLayer)
+    assert isinstance(plan[1].model, KSpacePropagator)
+
+    module_direct = OpticalModule(
+        layers=(
+            KPhaseMaskLayer(phase_map_rad=0.0, aperture_diameter_um=10.0),
+            PropagationLayer(model=KSpacePropagator(refractive_index=1.0), distance_um=distance_um),
+            PhaseMaskLayer(phase_map_rad=0.0),
+        )
+    )
+
+    out_auto = module_auto.forward(field_in)
+    out_direct = module_direct.forward(field_in)
+    np.testing.assert_allclose(np.asarray(out_auto.data), np.asarray(out_direct.data), atol=1e-6)
+
+
+def test_optical_module_rejects_inline_propagator_without_distance():
+    grid = Grid.from_extent(nx=16, ny=16, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    field = Field.plane_wave(grid=grid, spectrum=spectrum)
+
+    module = OpticalModule(layers=(AutoPropagator(),))
+    with pytest.raises(ValueError, match="must define distance_um"):
+        module.forward(field)

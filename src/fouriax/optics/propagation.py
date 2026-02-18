@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field, replace
+from typing import Literal, cast
 
 import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
 
 from fouriax.core.fft import fftconvolve
+from fouriax.optics.bandlimit import build_na_mask
 from fouriax.optics.interfaces import PropagationModel
 from fouriax.optics.model import Field, Grid, Spectrum
 
@@ -143,7 +145,14 @@ def _prepare_field_with_grid(field: Field, target_grid: Grid | None) -> Field:
         ],
         axis=0,
     )
-    return Field(data=data, grid=target_grid, spectrum=field.spectrum)
+    return Field(
+        data=data,
+        grid=target_grid,
+        spectrum=field.spectrum,
+        domain=field.domain,
+        kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+        ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+    )
 
 
 def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
@@ -162,7 +171,14 @@ def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
         ],
         axis=0,
     )
-    return Field(data=data, grid=original_grid, spectrum=field.spectrum)
+    return Field(
+        data=data,
+        grid=original_grid,
+        spectrum=field.spectrum,
+        domain=field.domain,
+        kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+        ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+    )
 
 
 @dataclass(frozen=True)
@@ -179,6 +195,8 @@ class RSPropagator(PropagationModel):
     precomputed_grid: Grid | None = None
     warn_on_regime_mismatch: bool = True
     equality_tolerance: float = 1e-6
+    medium_index: float = 1.0
+    na_limit: float | None = None
 
     def impulse_response(
         self,
@@ -199,9 +217,14 @@ class RSPropagator(PropagationModel):
         return h.astype(jnp.complex64)
 
     def propagate(self, field: Field, distance_um: float) -> Field:
+        field = field.to_spatial()
         self.validate_for(field)
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
+        if self.medium_index <= 0:
+            raise ValueError("medium_index must be strictly positive")
+        if self.na_limit is not None and self.na_limit <= 0:
+            raise ValueError("na_limit must be strictly positive when provided")
 
         if self.warn_on_regime_mismatch:
             method = select_propagator_method(
@@ -241,10 +264,30 @@ class RSPropagator(PropagationModel):
                 mode="same",
                 axes=(-2, -1),
             )
-            outputs.append(propagated * area_um2)
+            propagated = propagated * area_um2
+            if self.na_limit is not None:
+                na_mask = build_na_mask(
+                    work_field.grid,
+                    wavelength_um=float(wavelength_um),
+                    na_limit=float(self.na_limit),
+                    medium_index=float(self.medium_index),
+                )
+                propagated_spectrum = jnp.fft.fftn(propagated, axes=(-2, -1))
+                propagated = jnp.fft.ifftn(
+                    propagated_spectrum * na_mask.astype(jnp.complex64),
+                    axes=(-2, -1),
+                )
+            outputs.append(propagated)
 
         data = jnp.stack(outputs, axis=0)
-        propagated_field = Field(data=data, grid=work_field.grid, spectrum=work_field.spectrum)
+        propagated_field = Field(
+            data=data,
+            grid=work_field.grid,
+            spectrum=work_field.spectrum,
+            domain=work_field.domain,
+            kx_pixel_size_cyc_per_um=work_field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=work_field.ky_pixel_size_cyc_per_um,
+        )
         return _restore_to_original_grid(propagated_field, original_grid)
 
 
@@ -262,6 +305,8 @@ class ASMPropagator(PropagationModel):
     precomputed_grid: Grid | None = None
     warn_on_regime_mismatch: bool = True
     equality_tolerance: float = 1e-6
+    medium_index: float = 1.0
+    na_limit: float | None = None
 
     def transfer_function(
         self,
@@ -271,17 +316,32 @@ class ASMPropagator(PropagationModel):
     ) -> jnp.ndarray:
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
+        if self.medium_index <= 0:
+            raise ValueError("medium_index must be strictly positive")
+        if self.na_limit is not None and self.na_limit <= 0:
+            raise ValueError("na_limit must be strictly positive when provided")
 
         fx, fy = field.grid.frequency_grid()
         wl = jnp.asarray(wavelength_um, dtype=jnp.float32)
         z = jnp.asarray(distance_um, dtype=jnp.float32)
-        k = 2.0 * jnp.pi / wl
+        n = jnp.asarray(self.medium_index, dtype=jnp.float32)
+        k = 2.0 * jnp.pi * n / wl
 
-        argument = 1.0 - (wl * fx) ** 2 - (wl * fy) ** 2
+        argument = 1.0 - (wl * fx / n) ** 2 - (wl * fy / n) ** 2
         kz = k * jnp.sqrt(argument.astype(jnp.complex64))
-        return jnp.exp(1j * kz * z).astype(jnp.complex64)
+        transfer = jnp.exp(1j * kz * z).astype(jnp.complex64)
+        if self.na_limit is None:
+            return transfer
+        na_mask = build_na_mask(
+            field.grid,
+            wavelength_um=float(wavelength_um),
+            na_limit=float(self.na_limit),
+            medium_index=float(self.medium_index),
+        )
+        return transfer * na_mask.astype(jnp.complex64)
 
     def propagate(self, field: Field, distance_um: float) -> Field:
+        field = field.to_spatial()
         self.validate_for(field)
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
@@ -322,28 +382,108 @@ class ASMPropagator(PropagationModel):
             outputs.append(propagated)
 
         data = jnp.stack(outputs, axis=0)
-        propagated_field = Field(data=data, grid=work_field.grid, spectrum=work_field.spectrum)
+        propagated_field = Field(
+            data=data,
+            grid=work_field.grid,
+            spectrum=work_field.spectrum,
+            domain=work_field.domain,
+            kx_pixel_size_cyc_per_um=work_field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=work_field.ky_pixel_size_cyc_per_um,
+        )
         return _restore_to_original_grid(propagated_field, original_grid)
+
+
+@dataclass(frozen=True)
+class KSpacePropagator(PropagationModel):
+    """
+    k-space diagonal propagator using angular-spectrum phase advance.
+
+    All length quantities use micrometers (um).
+    """
+
+    refractive_index: float = 1.0
+    na_limit: float | None = None
+
+    def transfer_function(
+        self,
+        field: Field,
+        wavelength_um: float,
+        distance_um: float,
+    ) -> jnp.ndarray:
+        if distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive")
+        if self.refractive_index <= 0:
+            raise ValueError("refractive_index must be strictly positive")
+        if self.na_limit is not None and self.na_limit <= 0:
+            raise ValueError("na_limit must be strictly positive when provided")
+
+        fx, fy = field.grid.frequency_grid()
+        wl = jnp.asarray(wavelength_um, dtype=jnp.float32)
+        z = jnp.asarray(distance_um, dtype=jnp.float32)
+        n = jnp.asarray(self.refractive_index, dtype=jnp.float32)
+        k = 2.0 * jnp.pi * n / wl
+        argument = 1.0 - (wl * fx / n) ** 2 - (wl * fy / n) ** 2
+        propagating = argument >= 0.0
+        kz_real = k * jnp.sqrt(jnp.maximum(argument, 0.0))
+        transfer = jnp.exp(1j * kz_real * z).astype(jnp.complex64)
+        transfer = jnp.where(propagating, transfer, 0.0 + 0.0j)
+        if self.na_limit is None:
+            return transfer
+        na_mask = build_na_mask(
+            field.grid,
+            wavelength_um=float(wavelength_um),
+            na_limit=float(self.na_limit),
+            medium_index=float(self.refractive_index),
+        )
+        return transfer * na_mask.astype(jnp.complex64)
+
+    def propagate(self, field: Field, distance_um: float) -> Field:
+        field = field.to_kspace()
+        self.validate_for(field)
+        if distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive")
+
+        outputs = []
+        for i, wavelength_um in enumerate(field.spectrum.wavelengths_um):
+            transfer = self.transfer_function(field, wavelength_um, distance_um)
+            outputs.append(field.data[i] * transfer)
+
+        data = jnp.stack(outputs, axis=0)
+        return Field(
+            data=data,
+            grid=field.grid,
+            spectrum=field.spectrum,
+            domain="kspace",
+            kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+        )
 
 
 @dataclass(frozen=True)
 class AutoPropagator(PropagationModel):
     """
-    Propagator wrapper that auto-selects ASM or RS.
+    Propagator wrapper that auto-selects ASM, RS, or k-space propagation.
     """
 
     asm: ASMPropagator = field(default_factory=ASMPropagator)
     rs: RSPropagator = field(default_factory=RSPropagator)
+    kspace: KSpacePropagator = field(default_factory=KSpacePropagator)
     equality_tolerance: float = 1e-6
     nyquist_factor: float = 2.0
     min_padding_factor: float = 2.0
     setup_grid: Grid | None = None
     setup_spectrum: Spectrum | None = None
     setup_distance_um: float | None = None
+    distance_um: float | None = None
     precomputed_grid: Grid | None = None
-    precomputed_method: str | None = None
+    precomputed_method: Literal["asm", "rs", "kspace"] | None = None
 
     def __post_init__(self) -> None:
+        if self.precomputed_method not in (None, "asm", "rs", "kspace"):
+            raise ValueError("precomputed_method must be one of: asm, rs, kspace")
+        if self.distance_um is not None and self.distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive when provided")
+
         if self.precomputed_grid is not None:
             asm = self.asm
             rs = self.rs
@@ -364,13 +504,16 @@ class AutoPropagator(PropagationModel):
             object.__setattr__(self, "asm", asm)
             object.__setattr__(self, "rs", rs)
 
+        planned_distance_um = (
+            self.setup_distance_um if self.setup_distance_um is not None else self.distance_um
+        )
         if (
             self.setup_grid is not None
             and self.setup_spectrum is not None
-            and self.setup_distance_um is not None
+            and planned_distance_um is not None
             and (self.precomputed_grid is None or self.precomputed_method is None)
         ):
-            if self.setup_distance_um <= 0:
+            if planned_distance_um <= 0:
                 raise ValueError("setup_distance_um must be strictly positive")
             self.setup_grid.validate()
             self.setup_spectrum.validate()
@@ -388,11 +531,14 @@ class AutoPropagator(PropagationModel):
 
             method = self.precomputed_method
             if method is None:
-                method = select_propagator_method(
-                    grid=self.setup_grid,
-                    spectrum=self.setup_spectrum,
-                    distance_um=self.setup_distance_um,
-                    equality_tolerance=self.equality_tolerance,
+                method = cast(
+                    Literal["asm", "rs"],
+                    select_propagator_method(
+                        grid=self.setup_grid,
+                        spectrum=self.setup_spectrum,
+                        distance_um=planned_distance_um,
+                        equality_tolerance=self.equality_tolerance,
+                    ),
                 )
             object.__setattr__(self, "precomputed_grid", precomputed_grid)
             object.__setattr__(self, "precomputed_method", method)
@@ -417,20 +563,170 @@ class AutoPropagator(PropagationModel):
             object.__setattr__(self, "asm", asm)
             object.__setattr__(self, "rs", rs)
 
+    def select_method(
+        self,
+        field: Field,
+        distance_um: float,
+    ) -> Literal["asm", "rs", "kspace"]:
+        if distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive")
+
+        method = self.precomputed_method
+        if method is not None:
+            return method
+
+        if field.domain == "kspace":
+            return "kspace"
+        return cast(
+            Literal["asm", "rs"],
+            select_propagator_method(
+                grid=field.grid,
+                spectrum=field.spectrum,
+                distance_um=distance_um,
+                equality_tolerance=self.equality_tolerance,
+            ),
+        )
+
+    def resolved_model(self, field: Field, distance_um: float) -> PropagationModel:
+        method = self.select_method(field=field, distance_um=distance_um)
+        if method == "asm":
+            return self.asm
+        if method == "rs":
+            return self.rs
+        return self.kspace
+
     def propagate(self, field: Field, distance_um: float) -> Field:
         self.validate_for(field)
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
-        method = self.precomputed_method
-        if method is None:
-            method = select_propagator_method(
-                grid=field.grid,
-                spectrum=field.spectrum,
-                distance_um=distance_um,
-                equality_tolerance=self.equality_tolerance,
-            )
+        model = self.resolved_model(field=field, distance_um=distance_um)
+        return model.propagate(field, distance_um=distance_um)
 
-        if method == "asm":
-            return self.asm.propagate(field, distance_um=distance_um)
-        return self.rs.propagate(field, distance_um=distance_um)
+
+@dataclass(frozen=True)
+class Propagator(PropagationModel):
+    """
+    Public facade over ASM/RS/k-space/auto propagators.
+
+    Use `mode` to select behavior:
+    - "auto": choose ASM/RS by regime for spatial input, k-space for k-domain input
+    - "asm": always ASM
+    - "rs": always RS
+    - "kspace": always k-space propagator
+    """
+
+    mode: Literal["auto", "asm", "rs", "kspace"] = "auto"
+    distance_um: float | None = None
+    use_sampling_planner: bool = True
+    nyquist_factor: float = 2.0
+    min_padding_factor: float = 2.0
+    precomputed_grid: Grid | None = None
+    warn_on_regime_mismatch: bool = True
+    equality_tolerance: float = 1e-6
+    medium_index: float = 1.0
+    refractive_index: float = 1.0
+    na_limit: float | None = None
+    setup_grid: Grid | None = None
+    setup_spectrum: Spectrum | None = None
+    setup_distance_um: float | None = None
+    auto_precomputed_method: Literal["asm", "rs", "kspace"] | None = None
+    _resolved_precomputed_grid: Grid | None = field(default=None, init=False, repr=False)
+    _resolved_precomputed_method: Literal["asm", "rs", "kspace"] | None = field(
+        default=None, init=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("auto", "asm", "rs", "kspace"):
+            raise ValueError("mode must be one of: auto, asm, rs, kspace")
+        if self.distance_um is not None and self.distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive when provided")
+        if self.auto_precomputed_method is not None and self.auto_precomputed_method not in (
+            "asm",
+            "rs",
+            "kspace",
+        ):
+            raise ValueError("auto_precomputed_method must be one of: asm, rs, kspace")
+
+        if self.mode == "auto":
+            auto = self._auto_model()
+            object.__setattr__(self, "_resolved_precomputed_grid", auto.precomputed_grid)
+            object.__setattr__(self, "_resolved_precomputed_method", auto.precomputed_method)
+            return
+        object.__setattr__(self, "_resolved_precomputed_grid", self.precomputed_grid)
+        object.__setattr__(self, "_resolved_precomputed_method", self.mode)
+
+    @property
+    def precomputed_method(self) -> Literal["asm", "rs", "kspace"] | None:
+        return self._resolved_precomputed_method
+
+    @property
+    def resolved_precomputed_grid(self) -> Grid | None:
+        return self._resolved_precomputed_grid
+
+    def _asm_model(self) -> ASMPropagator:
+        return ASMPropagator(
+            use_sampling_planner=self.use_sampling_planner,
+            nyquist_factor=self.nyquist_factor,
+            min_padding_factor=self.min_padding_factor,
+            precomputed_grid=self.precomputed_grid,
+            warn_on_regime_mismatch=self.warn_on_regime_mismatch,
+            equality_tolerance=self.equality_tolerance,
+            medium_index=self.medium_index,
+            na_limit=self.na_limit,
+        )
+
+    def _rs_model(self) -> RSPropagator:
+        return RSPropagator(
+            use_sampling_planner=self.use_sampling_planner,
+            nyquist_factor=self.nyquist_factor,
+            min_padding_factor=self.min_padding_factor,
+            precomputed_grid=self.precomputed_grid,
+            warn_on_regime_mismatch=self.warn_on_regime_mismatch,
+            equality_tolerance=self.equality_tolerance,
+            medium_index=self.medium_index,
+            na_limit=self.na_limit,
+        )
+
+    def _kspace_model(self) -> KSpacePropagator:
+        return KSpacePropagator(
+            refractive_index=self.refractive_index,
+            na_limit=self.na_limit,
+        )
+
+    def _auto_model(self) -> AutoPropagator:
+        return AutoPropagator(
+            asm=self._asm_model(),
+            rs=self._rs_model(),
+            kspace=self._kspace_model(),
+            equality_tolerance=self.equality_tolerance,
+            nyquist_factor=self.nyquist_factor,
+            min_padding_factor=self.min_padding_factor,
+            setup_grid=self.setup_grid,
+            setup_spectrum=self.setup_spectrum,
+            setup_distance_um=self.setup_distance_um,
+            distance_um=self.distance_um,
+            precomputed_grid=self.precomputed_grid,
+            precomputed_method=self.auto_precomputed_method,
+        )
+
+    def _effective_distance(self, distance_um: float | None) -> float:
+        resolved = self.distance_um if distance_um is None else distance_um
+        if resolved is None:
+            raise ValueError(
+                "distance_um must be provided either on Propagator or at propagate() call"
+            )
+        if resolved <= 0:
+            raise ValueError("distance_um must be strictly positive")
+        return float(resolved)
+
+    def propagate(self, field: Field, distance_um: float | None = None) -> Field:
+        self.validate_for(field)
+        resolved_distance = self._effective_distance(distance_um)
+        if self.mode == "auto":
+            return self._auto_model().propagate(field, distance_um=resolved_distance)
+        if self.mode == "asm":
+            return self._asm_model().propagate(field, distance_um=resolved_distance)
+        if self.mode == "rs":
+            return self._rs_model().propagate(field, distance_um=resolved_distance)
+        return self._kspace_model().propagate(field, distance_um=resolved_distance)

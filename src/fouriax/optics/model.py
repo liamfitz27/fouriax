@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -41,6 +42,11 @@ class Grid:
         y_1d = (jnp.arange(self.ny) - (self.ny - 1) / 2.0) * self.dy_um
         x, y = jnp.meshgrid(x_1d, y_1d, indexing="xy")
         return x, y
+
+    def kspace_pixel_size_cyc_per_um(self) -> tuple[float, float]:
+        """Return k-grid sampling intervals `(dfx, dfy)` in cycles per micrometer."""
+        self.validate()
+        return (1.0 / (self.nx * self.dx_um), 1.0 / (self.ny * self.dy_um))
 
     def validate(self) -> None:
         if self.nx <= 0 or self.ny <= 0:
@@ -90,11 +96,37 @@ class Field:
     Complex optical field over a 2D grid for one or more wavelengths.
 
     Data shape is `(num_wavelengths, ny, nx)`.
+    `domain` indicates whether `data` is represented in spatial or k-space.
     """
 
     data: jnp.ndarray
     grid: Grid
     spectrum: Spectrum
+    domain: Literal["spatial", "kspace"] = "spatial"
+    kx_pixel_size_cyc_per_um: float | None = None
+    ky_pixel_size_cyc_per_um: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.domain not in ("spatial", "kspace"):
+            raise ValueError("domain must be one of: spatial, kspace")
+
+        default_kx, default_ky = self.grid.kspace_pixel_size_cyc_per_um()
+        kx = (
+            default_kx
+            if self.kx_pixel_size_cyc_per_um is None
+            else self.kx_pixel_size_cyc_per_um
+        )
+        ky = (
+            default_ky
+            if self.ky_pixel_size_cyc_per_um is None
+            else self.ky_pixel_size_cyc_per_um
+        )
+
+        if kx <= 0 or ky <= 0:
+            raise ValueError("kx/ky pixel sizes must be strictly positive")
+
+        object.__setattr__(self, "kx_pixel_size_cyc_per_um", float(kx))
+        object.__setattr__(self, "ky_pixel_size_cyc_per_um", float(ky))
 
     @classmethod
     def zeros(
@@ -140,7 +172,14 @@ class Field:
             raise ValueError("cannot normalize field with near-zero power")
         scale = jnp.sqrt(jnp.asarray(target, dtype=current.dtype) / current)
         scale = scale[:, None, None]
-        return Field(data=self.data * scale, grid=self.grid, spectrum=self.spectrum)
+        return Field(
+            data=self.data * scale,
+            grid=self.grid,
+            spectrum=self.spectrum,
+            domain=self.domain,
+            kx_pixel_size_cyc_per_um=self.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=self.ky_pixel_size_cyc_per_um,
+        )
 
     def apply_phase(self, phase_map: jnp.ndarray | float) -> "Field":
         phs = jnp.asarray(phase_map, dtype=jnp.float32)
@@ -148,11 +187,64 @@ class Field:
             data=self.data * jnp.exp(1j * phs),
             grid=self.grid,
             spectrum=self.spectrum,
+            domain=self.domain,
+            kx_pixel_size_cyc_per_um=self.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=self.ky_pixel_size_cyc_per_um,
         )
 
     def apply_amplitude(self, mask: jnp.ndarray | float) -> "Field":
         amp = jnp.asarray(mask, dtype=self.data.real.dtype)
-        return Field(data=self.data * amp, grid=self.grid, spectrum=self.spectrum)
+        return Field(
+            data=self.data * amp,
+            grid=self.grid,
+            spectrum=self.spectrum,
+            domain=self.domain,
+            kx_pixel_size_cyc_per_um=self.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=self.ky_pixel_size_cyc_per_um,
+        )
+
+    def to_kspace(self) -> "Field":
+        """Return this field in k-space domain."""
+        if self.domain == "kspace":
+            return self
+        data = jnp.fft.fftn(self.data, axes=(-2, -1))
+        kx, ky = self.grid.kspace_pixel_size_cyc_per_um()
+        return Field(
+            data=data,
+            grid=self.grid,
+            spectrum=self.spectrum,
+            domain="kspace",
+            kx_pixel_size_cyc_per_um=kx,
+            ky_pixel_size_cyc_per_um=ky,
+        )
+
+    def to_spatial(self) -> "Field":
+        """Return this field in spatial domain."""
+        if self.domain == "spatial":
+            return self
+        data = jnp.fft.ifftn(self.data, axes=(-2, -1))
+        kx, ky = self.grid.kspace_pixel_size_cyc_per_um()
+        return Field(
+            data=data,
+            grid=self.grid,
+            spectrum=self.spectrum,
+            domain="spatial",
+            kx_pixel_size_cyc_per_um=kx,
+            ky_pixel_size_cyc_per_um=ky,
+        )
+
+    @property
+    def spatial_pixel_size_um(self) -> tuple[float, float]:
+        return (self.grid.dx_um, self.grid.dy_um)
+
+    @property
+    def kspace_pixel_size_cyc_per_um(self) -> tuple[float, float]:
+        if self.kx_pixel_size_cyc_per_um is None or self.ky_pixel_size_cyc_per_um is None:
+            raise ValueError("k-space pixel size metadata is not initialized")
+        return (
+            float(cast(float, self.kx_pixel_size_cyc_per_um)),
+            float(cast(float, self.ky_pixel_size_cyc_per_um)),
+        )
 
     def validate(self) -> None:
         self.grid.validate()

@@ -11,10 +11,12 @@ requires-python = ">=3.12"
 license = { text = "Proprietary" }
 authors = [{ name = "fouriax contributors" }]
 dependencies = [
-  "jax[cuda12]>=0.4.30",
+  "jax[cuda12]>=0.4.30; platform_system == 'Linux'",
+  "jax>=0.4.30; platform_system != 'Linux'",
   "matplotlib>=3.8",
-  "numpy>=1.26,<2",
+  "numpy>=2.0",
   "optax>=0.2.3",
+  "ruff>=0.6",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +25,6 @@ test = [
   "scipy>=1.11",
 ]
 dev = [
-  "ruff>=0.6",
   "mypy>=1.10",
   "pre-commit>=3.7",
   "pytest>=8.0",

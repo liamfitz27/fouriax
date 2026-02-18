@@ -1,94 +1,116 @@
 # Handoff
 
 ## Repo State
-- Branch: `feat/general-optical-modules`
+- Branch: `feat/metaatom-grid-optimization`
 - Recent commits:
-  - `271e80b` refactor optics module APIs and add ONN plotting/training workflow
-  - `b873186` fix: wrap long lines in propagation and optimization test
-  - `4a1c819` feat: add focal spot loss and lens optimization example
-  - `4f9480a` fix: resolve ruff import order and line length issues
-  - `ce6f42b` docs: update project status for planning and propagator work
+  - `a9abedb` feat: add grid-wise meta-atom interpolation workflow
+  - `474fc2f` merge: pull request #9 into feature branch
+  - `18a4c90` merge: main into feature branch
+  - `1299712` chore: local-only pre-commit hooks on branch
+  - `7bf3628` feat: add device/objective options and operator-based losses to lens example
 - Working tree (not committed on this branch):
   - modified: `docs/DEVELOPMENT_WORKFLOW.md`
+  - modified: `docs/PROJECT_STATUS.md`
+  - modified: `docs/HANDOFF.md`
   - untracked: `.pre-commit-config.yaml`, `artifacts/`
+  - untracked: `src/fouriax.egg-info/`
 
 ## Completed
-- Added general optical composition stack:
-  - `OpticalModule`, `PropagationLayer`, `PhaseMaskLayer`, `AmplitudeMaskLayer`, `ComplexMaskLayer`
-  - module-level `sensor` support via `OpticalModule.measure(...)`
-- Added sensor implementations and integrated detector-region measurement into `IntensitySensor`.
-- Added plotting utilities for module evolution:
-  - `plot_field_evolution(...)` now supports sensor output and a second row for phase-mask visuals.
-- Added ONN training example:
-  - `scripts/onn_mnist_example.py` with fixed precomputed propagation grid, coarse mask grid, Adam optimizer, and evolution plotting.
-- Refactored `AutoPropagator` API:
-  - removed `.prepare(...)`
-  - init-time setup options (`setup_grid`, `setup_spectrum`, `setup_distance_um`) for one-time planning
-  - planning-policy knobs moved onto `AutoPropagator` (`policy_mode`, tolerances)
-- Simplified planner naming:
-  - replaced `safety_factor` with single `nyquist_fraction` in planning.
-- Updated lens optimization flow to use `OpticalModule`/layer abstractions and init-time precomputed `AutoPropagator`.
+- Core optics composition stack is stable (`OpticalModule`, mask layers, propagation layers, sensors).
+- Propagation backends (`ASMPropagator`, `RSPropagator`, `AutoPropagator`) are implemented and integrated.
+- Meta-atom LUT interpolation path and optimization example exist with targeted test coverage.
+- Plotting and sensor-aware module inspection utilities are available.
 
 ## Open Work
-- `tests/test_planning.py` and regime/sweep scripts still import planning internals directly (`fouriax.optics.planning`); decide whether to keep this as internal test surface or migrate to behavior-only `AutoPropagator` tests.
-- ONN example currently builds layer objects inside `logits_single`; optimize by separating static layer topology from per-step parameter transforms if compile/runtime becomes a bottleneck.
-- Optional: add a small helper utility for coarse-mask upsampling to avoid repeating resize logic between ONN script and future examples.
+- Previous handoff tasks about ONN/planning cleanup are intentionally deprioritized for this cycle.
+- Primary focus is now k-space layer planning and implementation:
+  - diagonal k-space phase and amplitude operators
+  - k-space propagators for uniform slab layers
+  - effective angle-dependent specular sheet operators (`T00(kx, ky)`)
+- Need explicit NA policy architecture decision:
+  - explicit stop/pupil layers vs propagator-level NA limits
+  - consistent behavior across `ASM`, `KSpace`, and `RS` paths
+- Need explicit hybrid-domain contract definition:
+  - where domain conversion is allowed/expected
+  - sensor/module boundary behavior (`kspace` input handling)
 
 ## Key Files
-- `src/fouriax/optics/layers.py`: optical layer implementations and `OpticalModule`.
-- `src/fouriax/optics/sensors.py`: `IntensitySensor` and `FieldReadout`; detector-region integration support.
-- `src/fouriax/optics/plotting.py`: field evolution plotting (now includes phase-mask row + sensor output panel).
-- `src/fouriax/optics/propagation.py`: `AutoPropagator` init-time setup/planning and ASM/RS dispatch.
-- `src/fouriax/optics/planning.py`: planning internals and `nyquist_fraction`-based sampling controls.
-- `scripts/onn_mnist_example.py`: ONN training script with fixed `work_grid` and separate `mask_grid`.
-- `scripts/lens_optimization_example.py`: lens optimization using `OpticalModule` composition.
-- `tests/test_optical_module.py`: tests for module/layer/sensor primitives.
-- `tests/test_lens_optimization.py`: optimization smoke test on refactored lens flow.
+- `src/fouriax/optics/layers.py`: existing optical layer interfaces; likely insertion point for new k-space layer classes.
+- `src/fouriax/optics/propagation.py`: ASM/RS operators and spectral propagation kernels to reuse for slab operators.
+- `src/fouriax/optics/field.py`: `Field` and `Spectrum` abstractions for domain-specific operator application.
+- `src/fouriax/optics/__init__.py`: public export surface for new k-space APIs.
+- `tests/test_optical_module.py`: composition/integration tests to extend for mixed layer stacks.
+- `tests/test_propagation.py` (or new `tests/test_kspace_layers.py`): target location for unit tests of diagonal operators.
 
 ## Runbook
+- Setup (creates/updates `.venv`):
+```bash
+scripts/dev_setup.sh
+```
+- Activate environment:
+```bash
+source .venv/bin/activate
+```
 - Full tests:
 ```bash
-PYTHONPATH=src pytest -q
+pytest -q
 ```
 - Optical module tests:
 ```bash
-PYTHONPATH=src pytest -q tests/test_optical_module.py
+pytest -q tests/test_optical_module.py
 ```
 - Lens optimization test:
 ```bash
-PYTHONPATH=src pytest -q tests/test_lens_optimization.py
+pytest -q tests/test_lens_optimization.py
 ```
 - Lens optimization script:
 ```bash
-MPLBACKEND=Agg PYTHONPATH=src python scripts/lens_optimization_example.py
+MPLBACKEND=Agg python scripts/lens_optimization_example.py
 ```
 - ONN script:
 ```bash
-MPLBACKEND=Agg PYTHONPATH=src python scripts/onn_mnist_example.py
+MPLBACKEND=Agg python scripts/onn_mnist_example.py
+```
+- Meta-atom tests:
+```bash
+pytest -q tests/test_meta_atoms.py
+```
+- Meta-atom script:
+```bash
+MPLBACKEND=Agg python scripts/metaatom_optimization_example.py
+```
+- Propagation-focused tests (recommended during k-space work):
+```bash
+pytest -q tests/test_propagation.py tests/test_optical_module.py
 ```
 
 ## Next Tasks
-1. Stabilize ONN training behavior under aliasing-relaxed settings.
-Done when: `scripts/onn_mnist_example.py` produces repeatable improvement with documented recommended `nyquist_fraction`, `distance_um`, and mask downsample values.
+1. Finalize NA policy architecture for hybrid optics.
+Done when: NA is represented consistently (layer-based and/or propagator-based), behavior is documented, and parity tests cover at least one `ASM` and one non-`ASM` path.
 
-2. Decide public API boundary for planning internals.
-Done when: either (a) planning internals are fully hidden and tests/scripts use only `AutoPropagator`, or (b) docs explicitly mark `fouriax.optics.planning` as supported advanced API.
+2. Stabilize hybrid-domain API contract.
+Done when: module/sensor domain expectations are explicit, conversion behavior is predictable, and tests cover mixed spatial+k pipelines without ambiguous transitions.
 
-3. Add integration test for sensor-aware field evolution plotting.
-Done when: test verifies `plot_field_evolution(...)` renders phase-mask row and sensor-output panel for an `OpticalModule` with phase+propagation layers and sensor.
+3. Keep 4f parity validation scripts aligned with chosen API contract.
+Done when: physical 4f vs k-surrogate vs raw FFT comparison scripts clearly separate profile-parity and throughput-parity checks and produce reproducible outputs in `artifacts/`.
 
 ## Risks / Caveats
 - JAX tracer safety: avoid Python scalar conversion (`float/int/bool`) inside differentiable paths.
-- Planned-grid upsampling can increase memory/compute significantly for ONN workloads.
-- Current ONN script uses network download for MNIST on first run and depends on matplotlib for plots.
+- k-space branch-cut and sign conventions for `kz` can silently introduce phase errors.
+- Effective-sheet validity requires subwavelength periodicity and specular-only operation; violations are model errors, not numerical bugs.
+- Large spectral grids and multilayer stacks can increase memory/runtime quickly.
+- NA behavior may remain confusing if architecture decisions are deferred while adding more layer types.
+- Silent domain conversion at module boundaries can hide performance costs and complicate debugging.
 
 ## Fresh Codex Prompt
 Use this prompt in a fresh instance:
 
 ```text
-Work in /Users/liam/fouriax on branch feat/general-optical-modules.
+Work in /Users/liam/fouriax on branch feat/metaatom-grid-optimization.
 First read docs/HANDOFF.md and docs/PROJECT_STATUS.md.
-Primary goal: complete Next Task 1 from docs/HANDOFF.md (stabilize ONN training hyperparameters with fixed work_grid/mask_grid).
-Run PYTHONPATH=src pytest -q tests/test_optical_module.py tests/test_lens_optimization.py before finishing.
+Use the project virtual environment (`scripts/dev_setup.sh`, then `source .venv/bin/activate`).
+Primary goal: implement k-space diagonal operators (phase/amplitude), uniform-slab k-space propagators, and effective specular sheet operators.
+Immediately resolve NA policy architecture and hybrid-domain contract boundaries before expanding new layer types.
+Run pytest -q tests/test_optical_module.py tests/test_propagation_selection.py tests/test_field_domain.py tests/test_na_schedule.py before finishing.
 Do not modify unrelated files (docs/DEVELOPMENT_WORKFLOW.md, .pre-commit-config.yaml, artifacts/) unless explicitly requested.
 ```

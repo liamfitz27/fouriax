@@ -233,7 +233,14 @@ class MetaAtomInterpolationLayer(OpticalLayer):
                 wavelengths_um=field.spectrum.wavelengths_um,
             )[0]
             modulation = transmission[:, None, None].astype(field.data.dtype)
-            return Field(data=field.data * modulation, grid=field.grid, spectrum=field.spectrum)
+            return Field(
+                data=field.data * modulation,
+                grid=field.grid,
+                spectrum=field.spectrum,
+                domain=field.domain,
+                kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+                ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+            )
 
         if geometry.shape[1:] != (field.grid.ny, field.grid.nx):
             raise ValueError(
@@ -247,7 +254,14 @@ class MetaAtomInterpolationLayer(OpticalLayer):
             wavelengths_um=field.spectrum.wavelengths_um,
         )
         modulation = jnp.moveaxis(transmission, -1, 0).astype(field.data.dtype)
-        return Field(data=field.data * modulation, grid=field.grid, spectrum=field.spectrum)
+        return Field(
+            data=field.data * modulation,
+            grid=field.grid,
+            spectrum=field.spectrum,
+            domain=field.domain,
+            kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+        )
 
     def validate_for(self, field: Field) -> None:
         super().validate_for(field)

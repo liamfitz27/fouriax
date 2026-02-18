@@ -3,21 +3,21 @@ repos:
     hooks:
       - id: ruff-check
         name: ruff check
-        entry: bash -c 'python -m ruff check .'
+        entry: bash -c '.venv/bin/python -m ruff check .'
         language: system
         pass_filenames: false
         stages: [pre-commit]
 
       - id: mypy
         name: mypy
-        entry: bash -c 'python -m mypy src'
+        entry: bash -c '.venv/bin/python -m mypy src'
         language: system
         pass_filenames: false
         stages: [pre-commit]
 
       - id: pytest
         name: pytest
-        entry: bash -c 'PYTHONPATH=src python -m pytest -q'
+        entry: bash -c 'PYTHONPATH=src .venv/bin/python -m pytest -q'
         language: system
         pass_filenames: false
         stages: [pre-commit]

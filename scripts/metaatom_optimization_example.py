@@ -12,7 +12,6 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
-    AutoPropagator,
     Field,
     Grid,
     MetaAtomInterpolationLayer,
@@ -20,6 +19,7 @@ from fouriax.optics import (
     OpticalModule,
     PhaseMaskLayer,
     PropagationLayer,
+    Propagator,
     Spectrum,
 )
 
@@ -60,8 +60,7 @@ def build_module(
     raw_params: jnp.ndarray,
     min_bounds: jnp.ndarray,
     max_bounds: jnp.ndarray,
-    propagator: AutoPropagator,
-    distance_um: float,
+    propagator: PropagationLayer,
 ) -> OpticalModule:
     return OpticalModule(
         layers=(
@@ -71,7 +70,7 @@ def build_module(
                 min_geometry_params=min_bounds,
                 max_geometry_params=max_bounds,
             ),
-            PropagationLayer(model=propagator, distance_um=distance_um),
+            propagator,
         )
     )
 
@@ -89,18 +88,14 @@ def main() -> None:
     wavelength_um = float(library.wavelengths_um[nearest_idx])
     frequency_hz = SPEED_OF_LIGHT_M_PER_S / (wavelength_um * 1e-6)
 
-    grid = Grid.from_extent(nx=32, ny=32, dx_um=0.7, dy_um=0.7)
+    grid = Grid.from_extent(nx=64, ny=64, dx_um=0.7, dy_um=0.7)
     spectrum = Spectrum.from_scalar(wavelength_um)
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
 
     distance_um = 100.0
     target_xy = (grid.nx // 2, grid.ny // 2)
 
-    propagator = AutoPropagator(
-        setup_grid=grid,
-        setup_spectrum=spectrum,
-        setup_distance_um=distance_um,
-    )
+    propagator = Propagator(mode="auto", distance_um=distance_um)
 
     side_axis = library.parameter_axes[0]
     min_bounds = jnp.array([side_axis[0]], dtype=jnp.float32)
@@ -113,7 +108,6 @@ def main() -> None:
             min_bounds=min_bounds,
             max_bounds=max_bounds,
             propagator=propagator,
-            distance_um=distance_um,
         )
         intensity = module.forward(field_in).intensity()
         center = intensity[0, target_xy[1], target_xy[0]]
@@ -142,7 +136,6 @@ def main() -> None:
         min_bounds=min_bounds,
         max_bounds=max_bounds,
         propagator=propagator,
-        distance_um=distance_um,
     )
 
     final_intensity = np.asarray(final_module.forward(field_in).intensity())
@@ -159,7 +152,7 @@ def main() -> None:
     reference_module = OpticalModule(
         layers=(
             PhaseMaskLayer(phase_map_rad=hyperbolic_phase[None, :, :]),
-            PropagationLayer(model=propagator, distance_um=distance_um),
+            propagator,
         )
     )
 
@@ -200,7 +193,6 @@ def main() -> None:
         "final_center_intensity": final_center_intensity,
         "reference_center_intensity": reference_center_intensity,
         "distance_um": distance_um,
-        "precomputed_method": propagator.precomputed_method,
     }
 
     out_dir = repo_root / "artifacts"

@@ -21,6 +21,7 @@ class IntensitySensor(Sensor):
     detector_masks: jnp.ndarray | None = None
 
     def measure(self, field: Field) -> jnp.ndarray:
+        field = field.to_spatial()
         self.validate_for(field)
         intensity = field.intensity()
         if self.detector_masks is not None:
@@ -58,6 +59,7 @@ class FieldReadout(Sensor):
     representation: str = "complex"
 
     def measure(self, field: Field) -> jnp.ndarray:
+        field = field.to_spatial()
         self.validate_for(field)
         if self.representation == "complex":
             return field.data

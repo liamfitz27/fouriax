@@ -16,13 +16,12 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
-    AutoPropagator,
     Field,
     Grid,
     IntensitySensor,
     OpticalModule,
     PhaseMaskLayer,
-    PropagationLayer,
+    Propagator,
     Spectrum,
     plot_field_evolution,
 )
@@ -76,9 +75,8 @@ def resize_images_to_grid(images: np.ndarray, grid: Grid) -> np.ndarray:
 def build_onn_module(
     params_mask: jnp.ndarray,
     work_grid: Grid,
-    propagator: AutoPropagator,
+    propagator: Propagator,
     detector_sensor: IntensitySensor,
-    distance_um: float,
 ) -> OpticalModule:
     layers = []
     for i in range(params_mask.shape[0]):
@@ -89,7 +87,7 @@ def build_onn_module(
         )
         bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
         layers.append(PhaseMaskLayer(phase_map_rad=bounded_phase))
-        layers.append(PropagationLayer(model=propagator, distance_um=distance_um))
+        layers.append(propagator)
     module = OpticalModule(layers=tuple(layers), sensor=detector_sensor)
     return module
 
@@ -123,15 +121,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     with jax.default_device(selected_device):
         input_grid = Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
         spectrum = Spectrum.from_scalar(1.55)
-        propagator = AutoPropagator(
+        propagator = Propagator(
+            mode="auto",
             setup_grid=input_grid,
             setup_spectrum=spectrum,
             setup_distance_um=distance_um,
+            distance_um=distance_um,
             nyquist_factor=nyquist_factor,
         )
-        if propagator.precomputed_grid is None:
-            raise RuntimeError("AutoPropagator did not build a precomputed grid")
-        work_grid = propagator.precomputed_grid
+        if propagator.resolved_precomputed_grid is None:
+            raise RuntimeError("Propagator(mode='auto') did not build a precomputed grid")
+        work_grid = propagator.resolved_precomputed_grid
         mask_nx = work_grid.nx // phase_mask_downsample
         mask_ny = work_grid.ny // phase_mask_downsample
         mask_grid = Grid.from_extent(
@@ -164,7 +164,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                 work_grid,
                 propagator,
                 detector_sensor,
-                distance_um=distance_um,
             )
             field = Field(
                 data=image_2d[None, :, :].astype(jnp.complex64),
@@ -228,7 +227,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             work_grid,
             propagator,
             detector_sensor,
-            distance_um=distance_um,
         )
         sample_idx = 0
         test_image = jnp.asarray(x_test[sample_idx], dtype=jnp.float32)
