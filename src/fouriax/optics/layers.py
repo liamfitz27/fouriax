@@ -5,6 +5,7 @@ from typing import Any, Literal, cast
 
 import jax.numpy as jnp
 
+from fouriax.core.fft import fftconvolve
 from fouriax.optics.interfaces import OpticalLayer, PropagationModel, Sensor
 from fouriax.optics.model import Field
 
@@ -56,8 +57,64 @@ def _with_field_metadata(
     )
 
 
+def _expand_psf_for_field(psf: jnp.ndarray, field: Field) -> jnp.ndarray:
+    arr = jnp.asarray(psf)
+    if arr.ndim == 2:
+        if arr.shape != (field.grid.ny, field.grid.nx):
+            raise ValueError(
+                f"psf shape mismatch: got {arr.shape}, expected {(field.grid.ny, field.grid.nx)}"
+            )
+        return arr[None, :, :]
+    if arr.ndim == 3:
+        if arr.shape[1:] != (field.grid.ny, field.grid.nx):
+            raise ValueError(
+                "psf shape mismatch: got "
+                f"{arr.shape[1:]}, expected {(field.grid.ny, field.grid.nx)}"
+            )
+        if arr.shape[0] not in (1, field.spectrum.size):
+            raise ValueError(
+                f"psf wavelength axis mismatch: got {arr.shape[0]}, expected 1 or "
+                f"{field.spectrum.size}"
+            )
+        return arr
+    raise ValueError("psf must have shape (ny, nx) or (num_wavelengths, ny, nx)")
+
+
+def _centered_delta_field(field: Field) -> Field:
+    data = jnp.zeros_like(field.data)
+    cy = field.grid.ny // 2
+    cx = field.grid.nx // 2
+    data = data.at[:, cy, cx].set(1.0 + 0.0j)
+    return Field(
+        data=data,
+        grid=field.grid,
+        spectrum=field.spectrum,
+        domain="spatial",
+        kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+        ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+    )
+
+
+def _linear_convolve_same_with_otf(
+    image_2d: jnp.ndarray,
+    otf_2d: jnp.ndarray,
+    *,
+    kernel_shape: tuple[int, int],
+) -> jnp.ndarray:
+    ky, kx = kernel_shape
+    ny, nx = image_2d.shape
+    full_shape = (ny + ky - 1, nx + kx - 1)
+    if otf_2d.shape != full_shape:
+        raise ValueError(f"otf shape mismatch: got {otf_2d.shape}, expected {full_shape}")
+    image_fft = jnp.fft.fftn(image_2d, s=full_shape, axes=(-2, -1))
+    full = jnp.fft.ifftn(image_fft * otf_2d, s=full_shape, axes=(-2, -1))
+    y0 = (ky - 1) // 2
+    x0 = (kx - 1) // 2
+    return full[y0 : y0 + ny, x0 : x0 + nx].real
+
+
 @dataclass(frozen=True)
-class PropagationLayer(OpticalLayer):
+class Propagation(OpticalLayer):
     """Optical layer wrapper around a propagation model and fixed distance."""
 
     model: PropagationModel
@@ -84,19 +141,19 @@ class OpticalModule(OpticalLayer):
     na_fallback_to_effective: bool = False
 
     @staticmethod
-    def _propagation_layer_view(layer: OpticalLayer | PropagationModel) -> PropagationLayer | None:
-        if isinstance(layer, PropagationLayer):
+    def _propagation_layer_view(layer: OpticalLayer | PropagationModel) -> Propagation | None:
+        if isinstance(layer, Propagation):
             return layer
         if isinstance(layer, PropagationModel):
             distance_um = getattr(layer, "distance_um", None)
             if distance_um is None:
                 raise ValueError(
                     "PropagationModel used directly in OpticalModule.layers must define "
-                    "distance_um, or be wrapped in PropagationLayer"
+                    "distance_um, or be wrapped in Propagation"
                 )
             if float(distance_um) <= 0:
                 raise ValueError("distance_um must be strictly positive")
-            return PropagationLayer(model=layer, distance_um=float(distance_um))
+            return Propagation(model=layer, distance_um=float(distance_um))
         return None
 
     @staticmethod
@@ -105,7 +162,7 @@ class OpticalModule(OpticalLayer):
 
     @staticmethod
     def _is_k_layer(layer: OpticalLayer) -> bool:
-        return isinstance(layer, (KPhaseMaskLayer, KAmplitudeMaskLayer, KComplexMaskLayer))
+        return isinstance(layer, (KSpacePhaseMask, KSpaceAmplitudeMask, KSpaceComplexMask))
 
     def _layer_stop_diameter_um(self, layer: OpticalLayer, field: Field) -> float | None:
         grid_diameter_um = self._spatial_grid_diameter_um(field)
@@ -256,9 +313,12 @@ class OpticalModule(OpticalLayer):
             if isinstance(propagation_layer.model, KSpacePropagator):
                 return "kspace"
             return current_domain
-        if isinstance(layer, (PhaseMaskLayer, AmplitudeMaskLayer, ComplexMaskLayer, ThinLensLayer)):
+        if isinstance(
+            layer,
+            (PhaseMask, AmplitudeMask, ComplexMask, ThinLens, IncoherentImager),
+        ):
             return "spatial"
-        if isinstance(layer, (KPhaseMaskLayer, KAmplitudeMaskLayer, KComplexMaskLayer)):
+        if isinstance(layer, (KSpacePhaseMask, KSpaceAmplitudeMask, KSpaceComplexMask)):
             return "kspace"
         return current_domain
 
@@ -345,7 +405,7 @@ class OpticalModule(OpticalLayer):
 
         This computes a geometric, consecutive-stop estimate:
         - Collect aperture stops from layers that expose `aperture_diameter_um`.
-        - Track axial position using `PropagationLayer.distance_um`.
+        - Track axial position using `Propagation.distance_um`.
         - Compute limiting angle between consecutive stops.
         """
         if medium_index <= 0:
@@ -378,7 +438,7 @@ class OpticalModule(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class PhaseMaskLayer(OpticalLayer):
+class PhaseMask(OpticalLayer):
     """Generic phase-only modulation layer."""
 
     phase_map_rad: jnp.ndarray | float
@@ -399,7 +459,7 @@ class PhaseMaskLayer(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class AmplitudeMaskLayer(OpticalLayer):
+class AmplitudeMask(OpticalLayer):
     """Generic amplitude modulation layer."""
 
     amplitude_map: jnp.ndarray | float
@@ -420,7 +480,7 @@ class AmplitudeMaskLayer(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class ComplexMaskLayer(OpticalLayer):
+class ComplexMask(OpticalLayer):
     """Generic complex-valued modulation layer (amplitude and phase)."""
 
     amplitude_map: jnp.ndarray | float = 1.0
@@ -451,7 +511,7 @@ class ComplexMaskLayer(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class KPhaseMaskLayer(OpticalLayer):
+class KSpacePhaseMask(OpticalLayer):
     """k-domain phase-only modulation layer."""
 
     phase_map_rad: jnp.ndarray | float
@@ -479,7 +539,7 @@ class KPhaseMaskLayer(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class KAmplitudeMaskLayer(OpticalLayer):
+class KSpaceAmplitudeMask(OpticalLayer):
     """k-domain amplitude modulation layer."""
 
     amplitude_map: jnp.ndarray | float
@@ -507,7 +567,7 @@ class KAmplitudeMaskLayer(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class KComplexMaskLayer(OpticalLayer):
+class KSpaceComplexMask(OpticalLayer):
     """k-domain complex-valued modulation layer (amplitude and phase)."""
 
     amplitude_map: jnp.ndarray | float = 1.0
@@ -545,7 +605,7 @@ class KComplexMaskLayer(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class ThinLensLayer(OpticalLayer):
+class ThinLens(OpticalLayer):
     """
     Ideal thin lens phase transform.
 
@@ -588,4 +648,148 @@ class ThinLensLayer(OpticalLayer):
             params["aperture_diameter_um"] = jnp.asarray(
                 self.aperture_diameter_um, dtype=jnp.float32
             )
+        return params
+
+
+@dataclass(frozen=True)
+class IncoherentImager(OpticalLayer):
+    """
+    Incoherent shift-invariant imager built from coherent optics + propagation.
+
+    The PSF is constructed internally by propagating a calibration source through:
+    `optical_layer -> propagator(distance_um)` and taking output intensity.
+    """
+
+    optical_layer: OpticalLayer
+    propagator: PropagationModel
+    distance_um: float
+    psf_source: Literal["impulse", "plane_wave_focus"] = "impulse"
+    normalize_psf: bool = True
+    enforce_nonnegative_psf: bool = True
+    mode: Literal["psf", "otf", "auto"] = "auto"
+    normalization_reference: Literal["near_1um", "near_wavelength", "at_imaging_distance"] = (
+        "near_wavelength"
+    )
+    normalization_reference_distance_um: float | None = None
+
+    def normalization_distance_um(self, field: Field) -> float:
+        """
+        Return the propagation distance used to compute PSF normalization sums.
+
+        This can be kept near-field (e.g. 1 um or wavelength-scale) so most power
+        remains inside the simulated grid, reducing normalization bias from far-field
+        truncation.
+        """
+        if self.normalization_reference_distance_um is not None:
+            if self.normalization_reference_distance_um <= 0:
+                raise ValueError("normalization_reference_distance_um must be strictly positive")
+            return float(self.normalization_reference_distance_um)
+        if self.normalization_reference == "near_1um":
+            return 1.0
+        if self.normalization_reference == "near_wavelength":
+            return max(1e-3, float(jnp.min(field.spectrum.wavelengths_um)))
+        if self.normalization_reference == "at_imaging_distance":
+            return float(self.distance_um)
+        raise ValueError(
+            "normalization_reference must be one of: "
+            "near_1um, near_wavelength, at_imaging_distance"
+        )
+
+    def build_psf(self, field: Field) -> jnp.ndarray:
+        spatial_field = field.to_spatial()
+        self.validate_for(spatial_field)
+        if self.distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive")
+        if self.psf_source not in ("impulse", "plane_wave_focus"):
+            raise ValueError("psf_source must be one of: impulse, plane_wave_focus")
+
+        if self.psf_source == "impulse":
+            source = _centered_delta_field(spatial_field)
+        else:
+            source = Field.plane_wave(grid=spatial_field.grid, spectrum=spatial_field.spectrum)
+
+        coherent = self.optical_layer.forward(source)
+        response = self.propagator.propagate(coherent, distance_um=self.distance_um).to_spatial()
+        psf = response.intensity().astype(spatial_field.data.real.dtype)
+
+        if self.enforce_nonnegative_psf:
+            psf = jnp.maximum(psf, 0.0)
+        if self.normalize_psf:
+            norm_distance_um = self.normalization_distance_um(spatial_field)
+            if abs(norm_distance_um - self.distance_um) < 1e-12:
+                sums = jnp.sum(psf, axis=(-2, -1), keepdims=True)
+            else:
+                ref_response = self.propagator.propagate(
+                    coherent,
+                    distance_um=norm_distance_um,
+                ).to_spatial()
+                ref_psf = ref_response.intensity().astype(spatial_field.data.real.dtype)
+                if self.enforce_nonnegative_psf:
+                    ref_psf = jnp.maximum(ref_psf, 0.0)
+                sums = jnp.sum(ref_psf, axis=(-2, -1), keepdims=True)
+            psf = psf / jnp.maximum(sums, 1e-12)
+        return psf
+
+    def forward(self, field: Field) -> Field:
+        spatial_field = field.to_spatial()
+        self.validate_for(spatial_field)
+        psf = _expand_psf_for_field(self.build_psf(spatial_field), spatial_field)
+        intensity = spatial_field.intensity().astype(spatial_field.data.real.dtype)
+
+        if self.mode not in ("psf", "otf", "auto"):
+            raise ValueError("mode must be one of: psf, otf, auto")
+        resolved_mode = self.mode
+        if resolved_mode == "auto":
+            # FFT-domain imaging becomes favorable for larger kernels/grids.
+            resolved_mode = (
+                "otf"
+                if (spatial_field.grid.nx * spatial_field.grid.ny) >= 4096
+                else "psf"
+            )
+
+        outputs: list[jnp.ndarray] = []
+        if resolved_mode == "otf":
+            ky, kx = spatial_field.grid.ny, spatial_field.grid.nx
+            full_shape = (2 * ky - 1, 2 * kx - 1)
+            otf = jnp.stack(
+                [
+                    jnp.fft.fftn(
+                        psf[0] if psf.shape[0] == 1 else psf[i],
+                        s=full_shape,
+                        axes=(-2, -1),
+                    )
+                    for i in range(spatial_field.spectrum.size)
+                ],
+                axis=0,
+            )
+            for i in range(spatial_field.spectrum.size):
+                outputs.append(
+                    _linear_convolve_same_with_otf(
+                        intensity[i],
+                        otf[i],
+                        kernel_shape=(ky, kx),
+                    )
+                )
+        else:
+            for i in range(spatial_field.spectrum.size):
+                psf_i = psf[0] if psf.shape[0] == 1 else psf[i]
+                outputs.append(fftconvolve(intensity[i], psf_i, mode="same", axes=(-2, -1)))
+
+        image = jnp.stack(outputs, axis=0)
+        amplitude = jnp.sqrt(jnp.maximum(image, 0.0)).astype(spatial_field.data.real.dtype)
+        return Field(
+            data=amplitude.astype(spatial_field.data.dtype),
+            grid=spatial_field.grid,
+            spectrum=spatial_field.spectrum,
+            domain="spatial",
+            kx_pixel_size_cyc_per_um=spatial_field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=spatial_field.ky_pixel_size_cyc_per_um,
+        )
+
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        params: dict[str, jnp.ndarray] = {
+            "distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32),
+        }
+        for key, value in self.optical_layer.parameters().items():
+            params[f"optical_layer.{key}"] = value
         return params

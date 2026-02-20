@@ -5,9 +5,9 @@ from fouriax.optics import (
     ASMPropagator,
     Field,
     Grid,
-    KPhaseMaskLayer,
+    KSpacePhaseMask,
     KSpacePropagator,
-    PhaseMaskLayer,
+    PhaseMask,
     Spectrum,
 )
 
@@ -42,7 +42,7 @@ def test_spatial_layer_auto_converts_kspace_input():
     spectrum = Spectrum.from_scalar(0.532)
     field_k = Field.plane_wave(grid=grid, spectrum=spectrum).to_kspace()
 
-    out = PhaseMaskLayer(phase_map_rad=0.1).forward(field_k)
+    out = PhaseMask(phase_map_rad=0.1).forward(field_k)
     assert out.domain == "spatial"
 
 
@@ -51,7 +51,7 @@ def test_k_layer_and_k_propagator_auto_convert_spatial_input():
     spectrum = Spectrum.from_scalar(0.532)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
 
-    out_k = KPhaseMaskLayer(phase_map_rad=0.2).forward(field)
+    out_k = KSpacePhaseMask(phase_map_rad=0.2).forward(field)
     assert out_k.domain == "kspace"
 
     out_prop = KSpacePropagator(refractive_index=1.0).propagate(field, distance_um=5.0)

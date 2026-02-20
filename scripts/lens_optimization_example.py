@@ -12,12 +12,12 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
-    AmplitudeMaskLayer,
+    AmplitudeMask,
+    CoherentPropagator,
     Field,
     Grid,
     OpticalModule,
-    PhaseMaskLayer,
-    Propagator,
+    PhaseMask,
     Spectrum,
     focal_spot_loss,
 )
@@ -41,14 +41,14 @@ def main() -> None:
     target_xy = (grid.nx // 2, grid.ny // 2)
     window_px = 2
 
-    propagator = Propagator(mode="auto", distance_um=distance_um)
+    propagator = CoherentPropagator(mode="auto", distance_um=distance_um)
 
     def loss_fn(raw_phase_map: jnp.ndarray) -> jnp.ndarray:
         phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase_map)
         module = OpticalModule(
             layers=(
-                PhaseMaskLayer(phase_map_rad=phase_limited[None, :, :]),
-                AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+                PhaseMask(phase_map_rad=phase_limited[None, :, :]),
+                AmplitudeMask(amplitude_map=aperture[None, :, :]),
                 propagator,
             )
         )
@@ -83,8 +83,8 @@ def main() -> None:
     final_phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(phase_map)
     final_module = OpticalModule(
         layers=(
-            PhaseMaskLayer(phase_map_rad=final_phase_limited[None, :, :]),
-            AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+            PhaseMask(phase_map_rad=final_phase_limited[None, :, :]),
+            AmplitudeMask(amplitude_map=aperture[None, :, :]),
             propagator,
         )
     )
@@ -100,8 +100,8 @@ def main() -> None:
     )
     reference_module = OpticalModule(
         layers=(
-            PhaseMaskLayer(phase_map_rad=hyperbolic_phase[None, :, :]),
-            AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
+            PhaseMask(phase_map_rad=hyperbolic_phase[None, :, :]),
+            AmplitudeMask(amplitude_map=aperture[None, :, :]),
             propagator,
         )
     )

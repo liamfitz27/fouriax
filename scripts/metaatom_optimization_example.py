@@ -12,14 +12,14 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
+    CoherentPropagator,
     Field,
     Grid,
     MetaAtomInterpolationLayer,
     MetaAtomLibrary,
     OpticalModule,
-    PhaseMaskLayer,
-    PropagationLayer,
-    Propagator,
+    PhaseMask,
+    Propagation,
     Spectrum,
 )
 
@@ -60,7 +60,7 @@ def build_module(
     raw_params: jnp.ndarray,
     min_bounds: jnp.ndarray,
     max_bounds: jnp.ndarray,
-    propagator: PropagationLayer,
+    propagator: Propagation,
 ) -> OpticalModule:
     return OpticalModule(
         layers=(
@@ -95,7 +95,7 @@ def main() -> None:
     distance_um = 100.0
     target_xy = (grid.nx // 2, grid.ny // 2)
 
-    propagator = Propagator(mode="auto", distance_um=distance_um)
+    propagator = CoherentPropagator(mode="auto", distance_um=distance_um)
 
     side_axis = library.parameter_axes[0]
     min_bounds = jnp.array([side_axis[0]], dtype=jnp.float32)
@@ -151,7 +151,7 @@ def main() -> None:
     )
     reference_module = OpticalModule(
         layers=(
-            PhaseMaskLayer(phase_map_rad=hyperbolic_phase[None, :, :]),
+            PhaseMask(phase_map_rad=hyperbolic_phase[None, :, :]),
             propagator,
         )
     )

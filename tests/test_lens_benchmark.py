@@ -1,7 +1,7 @@
 import numpy as np
 from scipy.special import j1
 
-from fouriax.optics import Field, Grid, RSPropagator, Spectrum, ThinLensLayer
+from fouriax.optics import Field, Grid, RSPropagator, Spectrum, ThinLens
 
 
 def _airy_profile(
@@ -26,7 +26,7 @@ def test_thin_lens_focus_matches_airy_benchmark():
     spectrum = Spectrum.from_scalar(wavelength_um)
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
 
-    lens = ThinLensLayer(
+    lens = ThinLens(
         focal_length_um=focal_um,
         aperture_diameter_um=aperture_diameter_um,
     )

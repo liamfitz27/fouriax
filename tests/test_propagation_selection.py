@@ -5,10 +5,10 @@ from scipy.special import j1
 from fouriax.optics import (
     ASMPropagator,
     AutoPropagator,
+    CoherentPropagator,
     Field,
     Grid,
     KSpacePropagator,
-    Propagator,
     RSPropagator,
     Spectrum,
 )
@@ -117,14 +117,14 @@ def test_auto_selection_matches_best_method_in_near_and_far_regimes():
     aperture_diameter_um = 30.0
     z_crit = critical_distance_um(grid=grid, spectrum=spectrum)
 
-    from fouriax.optics import ThinLensLayer
+    from fouriax.optics import ThinLens
 
     asm = ASMPropagator(use_sampling_planner=True, nyquist_factor=2.0, min_padding_factor=2.0)
     rs = RSPropagator(use_sampling_planner=True, nyquist_factor=2.0, min_padding_factor=2.0)
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
 
     for distance_um, expected_method in ((0.5 * z_crit, "asm"), (2.0 * z_crit, "rs")):
-        lens = ThinLensLayer(
+        lens = ThinLens(
             focal_length_um=distance_um,
             aperture_diameter_um=aperture_diameter_um,
         )
@@ -191,20 +191,20 @@ def test_propagator_facade_mode_dispatch():
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
     distance_um = 25.0
 
-    out_asm = Propagator(mode="asm", distance_um=distance_um, use_sampling_planner=False).propagate(
-        field
-    )
+    out_asm = CoherentPropagator(
+        mode="asm", distance_um=distance_um, use_sampling_planner=False
+    ).propagate(field)
     ref_asm = ASMPropagator(use_sampling_planner=False).propagate(field, distance_um=distance_um)
     np.testing.assert_allclose(np.asarray(out_asm.data), np.asarray(ref_asm.data), atol=1e-6)
 
-    out_rs = Propagator(mode="rs", distance_um=distance_um, use_sampling_planner=False).propagate(
-        field
-    )
+    out_rs = CoherentPropagator(
+        mode="rs", distance_um=distance_um, use_sampling_planner=False
+    ).propagate(field)
     ref_rs = RSPropagator(use_sampling_planner=False).propagate(field, distance_um=distance_um)
     np.testing.assert_allclose(np.asarray(out_rs.data), np.asarray(ref_rs.data), atol=1e-6)
 
     field_k = field.to_kspace()
-    out_k = Propagator(mode="kspace", distance_um=distance_um).propagate(field_k)
+    out_k = CoherentPropagator(mode="kspace", distance_um=distance_um).propagate(field_k)
     ref_k = KSpacePropagator().propagate(field_k, distance_um=distance_um)
     np.testing.assert_allclose(np.asarray(out_k.data), np.asarray(ref_k.data), atol=1e-6)
 
@@ -213,7 +213,7 @@ def test_propagator_facade_auto_precomputes_method_and_grid():
     grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     z_crit = critical_distance_um(grid=grid, spectrum=spectrum)
-    p = Propagator(
+    p = CoherentPropagator(
         mode="auto",
         setup_grid=grid,
         setup_spectrum=spectrum,

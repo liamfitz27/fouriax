@@ -1,116 +1,78 @@
 # Handoff
 
 ## Repo State
-- Branch: `feat/metaatom-grid-optimization`
-- Recent commits:
-  - `a9abedb` feat: add grid-wise meta-atom interpolation workflow
-  - `474fc2f` merge: pull request #9 into feature branch
-  - `18a4c90` merge: main into feature branch
-  - `1299712` chore: local-only pre-commit hooks on branch
-  - `7bf3628` feat: add device/objective options and operator-based losses to lens example
-- Working tree (not committed on this branch):
-  - modified: `docs/DEVELOPMENT_WORKFLOW.md`
-  - modified: `docs/PROJECT_STATUS.md`
-  - modified: `docs/HANDOFF.md`
-  - untracked: `.pre-commit-config.yaml`, `artifacts/`
-  - untracked: `src/fouriax.egg-info/`
+
+- Branch: `feat/fourier-hybrid-module-na`
+- HEAD: `4a2ab0f` (`feat: add propagator facade and migrate examples`)
+- Working tree:
+  - modified: `docs/PLANNED_ADDITIONS.md`
 
 ## Completed
-- Core optics composition stack is stable (`OpticalModule`, mask layers, propagation layers, sensors).
-- Propagation backends (`ASMPropagator`, `RSPropagator`, `AutoPropagator`) are implemented and integrated.
-- Meta-atom LUT interpolation path and optimization example exist with targeted test coverage.
-- Plotting and sensor-aware module inspection utilities are available.
+
+- Added unified public propagator facade: `Propagator(mode="auto"|"asm"|"rs"|"kspace")`.
+- Kept existing specialized propagators (`ASMPropagator`, `RSPropagator`, `KSpacePropagator`, `AutoPropagator`) for low-level use.
+- Enabled direct propagator usage inside `OpticalModule.layers` when `distance_um` is defined.
+- Added module-level propagation planning to resolve auto choices before execution.
+- Added RS `na_limit` support and conservative NA merge behavior (`min(existing, scheduled)`).
+- Updated all `scripts/*_example.py` to use the new facade style.
 
 ## Open Work
-- Previous handoff tasks about ONN/planning cleanup are intentionally deprioritized for this cycle.
-- Primary focus is now k-space layer planning and implementation:
-  - diagonal k-space phase and amplitude operators
-  - k-space propagators for uniform slab layers
-  - effective angle-dependent specular sheet operators (`T00(kx, ky)`)
-- Need explicit NA policy architecture decision:
-  - explicit stop/pupil layers vs propagator-level NA limits
-  - consistent behavior across `ASM`, `KSpace`, and `RS` paths
-- Need explicit hybrid-domain contract definition:
-  - where domain conversion is allowed/expected
-  - sensor/module boundary behavior (`kspace` input handling)
+
+- Primary next goal: add incoherent imaging support with shift-invariant PSF/OTF operators.
+- Keep polarization/Jones and rectangular meta-atom additions staged after incoherent imaging core lands.
 
 ## Key Files
-- `src/fouriax/optics/layers.py`: existing optical layer interfaces; likely insertion point for new k-space layer classes.
-- `src/fouriax/optics/propagation.py`: ASM/RS operators and spectral propagation kernels to reuse for slab operators.
-- `src/fouriax/optics/field.py`: `Field` and `Spectrum` abstractions for domain-specific operator application.
-- `src/fouriax/optics/__init__.py`: public export surface for new k-space APIs.
-- `tests/test_optical_module.py`: composition/integration tests to extend for mixed layer stacks.
-- `tests/test_propagation.py` (or new `tests/test_kspace_layers.py`): target location for unit tests of diagonal operators.
+
+- `src/fouriax/optics/propagation.py`: propagator implementations + new `Propagator` facade.
+- `src/fouriax/optics/layers.py`: module planning + inline propagator handling.
+- `src/fouriax/optics/plotting.py`: plotting now uses planned layers.
+- `tests/test_propagation_selection.py`: facade mode dispatch and auto-precompute tests.
+- `docs/PLANNED_ADDITIONS.md`: roadmap (including coherence phase).
 
 ## Runbook
-- Setup (creates/updates `.venv`):
+
+- Setup:
+
 ```bash
 scripts/dev_setup.sh
 ```
-- Activate environment:
+
+- Local quality gate:
+
 ```bash
-source .venv/bin/activate
+scripts/tests_local.sh
 ```
-- Full tests:
+
+- Targeted checks used during recent changes:
+
 ```bash
-pytest -q
-```
-- Optical module tests:
-```bash
-pytest -q tests/test_optical_module.py
-```
-- Lens optimization test:
-```bash
-pytest -q tests/test_lens_optimization.py
-```
-- Lens optimization script:
-```bash
-MPLBACKEND=Agg python scripts/lens_optimization_example.py
-```
-- ONN script:
-```bash
-MPLBACKEND=Agg python scripts/onn_mnist_example.py
-```
-- Meta-atom tests:
-```bash
-pytest -q tests/test_meta_atoms.py
-```
-- Meta-atom script:
-```bash
-MPLBACKEND=Agg python scripts/metaatom_optimization_example.py
-```
-- Propagation-focused tests (recommended during k-space work):
-```bash
-pytest -q tests/test_propagation.py tests/test_optical_module.py
+.venv/bin/python -m pytest -q tests/test_propagation_selection.py tests/test_optical_module.py tests/test_na_schedule.py
+MPLBACKEND=Agg .venv/bin/python scripts/4f_comparison_example.py
+MPLBACKEND=Agg .venv/bin/python scripts/lens_optimization_example.py
+MPLBACKEND=Agg .venv/bin/python scripts/metaatom_optimization_example.py
 ```
 
 ## Next Tasks
-1. Finalize NA policy architecture for hybrid optics.
-Done when: NA is represented consistently (layer-based and/or propagator-based), behavior is documented, and parity tests cover at least one `ASM` and one non-`ASM` path.
 
-2. Stabilize hybrid-domain API contract.
-Done when: module/sensor domain expectations are explicit, conversion behavior is predictable, and tests cover mixed spatial+k pipelines without ambiguous transitions.
+1. Implement incoherent imaging operators (`IncoherentImagingLayer` / `OTFImagingLayer`).
+   Done when: PSF and OTF implementations are numerically consistent and covered by parity tests.
+2. Integrate incoherent mode into example workflows.
+   Done when: at least one example script demonstrates incoherent image formation and saves reproducible artifacts.
+3. Add explicit API contract and tests for coherent vs incoherent paths.
+   Done when: behavior differences are validated in tests and discoverable from public API docs.
 
-3. Keep 4f parity validation scripts aligned with chosen API contract.
-Done when: physical 4f vs k-surrogate vs raw FFT comparison scripts clearly separate profile-parity and throughput-parity checks and produce reproducible outputs in `artifacts/`.
+## Risks
 
-## Risks / Caveats
-- JAX tracer safety: avoid Python scalar conversion (`float/int/bool`) inside differentiable paths.
-- k-space branch-cut and sign conventions for `kz` can silently introduce phase errors.
-- Effective-sheet validity requires subwavelength periodicity and specular-only operation; violations are model errors, not numerical bugs.
-- Large spectral grids and multilayer stacks can increase memory/runtime quickly.
-- NA behavior may remain confusing if architecture decisions are deferred while adding more layer types.
-- Silent domain conversion at module boundaries can hide performance costs and complicate debugging.
+- Boundary/padding choices in PSF convolution can bias optimization results.
+- Incoherent operators can be confused with coherent k-space propagation unless contracts stay explicit.
+- Runtime and memory growth for large kernels/grids.
 
 ## Fresh Codex Prompt
-Use this prompt in a fresh instance:
 
 ```text
-Work in /Users/liam/fouriax on branch feat/metaatom-grid-optimization.
-First read docs/HANDOFF.md and docs/PROJECT_STATUS.md.
-Use the project virtual environment (`scripts/dev_setup.sh`, then `source .venv/bin/activate`).
-Primary goal: implement k-space diagonal operators (phase/amplitude), uniform-slab k-space propagators, and effective specular sheet operators.
-Immediately resolve NA policy architecture and hybrid-domain contract boundaries before expanding new layer types.
-Run pytest -q tests/test_optical_module.py tests/test_propagation_selection.py tests/test_field_domain.py tests/test_na_schedule.py before finishing.
-Do not modify unrelated files (docs/DEVELOPMENT_WORKFLOW.md, .pre-commit-config.yaml, artifacts/) unless explicitly requested.
+Work in /Users/liam/fouriax on branch feat/fourier-hybrid-module-na.
+First read docs/HANDOFF.md and docs/PLANNED_ADDITIONS.md.
+Use .venv
+Primary goal: implement incoherent imaging support (shift-invariant PSF/OTF), starting with real-space imaging scope.
+Run pytest -q tests/test_propagation_selection.py tests/test_optical_module.py tests/test_na_schedule.py plus new incoherent-imaging tests.
 ```

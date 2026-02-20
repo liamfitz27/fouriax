@@ -5,9 +5,9 @@ import pytest
 from fouriax.optics import (
     Field,
     Grid,
-    KAmplitudeMaskLayer,
-    KComplexMaskLayer,
-    KPhaseMaskLayer,
+    KSpaceAmplitudeMask,
+    KSpaceComplexMask,
+    KSpacePhaseMask,
     Spectrum,
 )
 
@@ -31,7 +31,7 @@ def test_k_phase_mask_matches_manual_kspace_multiplication():
     phase = jnp.linspace(0.0, jnp.pi, grid.nx * grid.ny, dtype=jnp.float32).reshape(
         1, grid.ny, grid.nx
     )
-    out = KPhaseMaskLayer(phase_map_rad=phase).forward(field)
+    out = KSpacePhaseMask(phase_map_rad=phase).forward(field)
     expected = _manual_k_op(field, phase_rad=phase)
     np.testing.assert_allclose(np.asarray(out.data), np.asarray(expected), atol=1e-6)
     assert out.domain == "kspace"
@@ -45,7 +45,7 @@ def test_k_amplitude_mask_matches_manual_kspace_multiplication():
     amp = jnp.linspace(0.2, 1.0, grid.nx * grid.ny, dtype=jnp.float32).reshape(
         1, grid.ny, grid.nx
     )
-    out = KAmplitudeMaskLayer(amplitude_map=amp).forward(field)
+    out = KSpaceAmplitudeMask(amplitude_map=amp).forward(field)
     expected = _manual_k_op(field, amplitude=amp)
     np.testing.assert_allclose(np.asarray(out.data), np.asarray(expected), atol=1e-6)
     assert out.domain == "kspace"
@@ -62,7 +62,7 @@ def test_k_complex_mask_matches_manual_kspace_multiplication():
     phase = jnp.linspace(-jnp.pi, jnp.pi, grid.nx * grid.ny, dtype=jnp.float32).reshape(
         1, grid.ny, grid.nx
     )
-    out = KComplexMaskLayer(amplitude_map=amp, phase_map_rad=phase).forward(field)
+    out = KSpaceComplexMask(amplitude_map=amp, phase_map_rad=phase).forward(field)
     expected = _manual_k_op(field, amplitude=amp, phase_rad=phase)
     np.testing.assert_allclose(np.asarray(out.data), np.asarray(expected), atol=1e-6)
     assert out.domain == "kspace"
@@ -74,4 +74,4 @@ def test_k_phase_mask_rejects_bad_shape():
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
 
     with pytest.raises(ValueError, match="phase_map_rad shape mismatch"):
-        KPhaseMaskLayer(phase_map_rad=jnp.zeros((3, 3), dtype=jnp.float32)).forward(field)
+        KSpacePhaseMask(phase_map_rad=jnp.zeros((3, 3), dtype=jnp.float32)).forward(field)

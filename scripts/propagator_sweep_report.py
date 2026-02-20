@@ -18,7 +18,7 @@ from fouriax.optics import (
     Grid,
     RSPropagator,
     Spectrum,
-    ThinLensLayer,
+    ThinLens,
 )
 from fouriax.optics.propagation import critical_distance_um, select_propagator_method
 
@@ -132,7 +132,7 @@ def run_sweep(args: argparse.Namespace) -> list[dict[str, float | int | str]]:
 
             for ratio in args.z_ratios:
                 distance_um = ratio * z_crit_um
-                lens = ThinLensLayer(
+                lens = ThinLens(
                     focal_length_um=distance_um,
                     aperture_diameter_um=aperture_diameter_um,
                 )
