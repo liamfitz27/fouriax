@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import jax.numpy as jnp
 
 from fouriax.core.fft import fftconvolve
-from fouriax.optics.interfaces import OpticalLayer, PropagationModel, Sensor
+from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.model import Field
 
 
@@ -114,46 +114,44 @@ def _linear_convolve_same_with_otf(
 
 
 @dataclass(frozen=True)
-class Propagation(OpticalLayer):
-    """Optical layer wrapper around a propagation model and fixed distance."""
-
-    model: PropagationModel
-    distance_um: float
-
-    def forward(self, field: Field) -> Field:
-        self.validate_for(field)
-        if self.distance_um <= 0:
-            raise ValueError("distance_um must be strictly positive")
-        return self.model.propagate(field, distance_um=self.distance_um)
-
-    def parameters(self) -> dict[str, jnp.ndarray]:
-        return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
-
-
-@dataclass(frozen=True)
 class OpticalModule(OpticalLayer):
     """Composable sequence of optical layers."""
 
-    layers: tuple[OpticalLayer | PropagationModel, ...]
+    layers: tuple[OpticalLayer, ...]
     sensor: Sensor | None = None
     auto_apply_na: bool = False
     medium_index: float = 1.0
     na_fallback_to_effective: bool = False
 
-    @staticmethod
-    def _propagation_layer_view(layer: OpticalLayer | PropagationModel) -> Propagation | None:
-        if isinstance(layer, Propagation):
-            return layer
-        if isinstance(layer, PropagationModel):
+    @classmethod
+    def _propagation_layer_view(cls, layer: OpticalLayer) -> OpticalLayer | None:
+        from fouriax.optics.propagation import (
+            ASMPropagator,
+            AutoPropagator,
+            CoherentPropagator,
+            KSpacePropagator,
+            RSPropagator,
+        )
+
+        if isinstance(
+            layer,
+            (
+                ASMPropagator,
+                AutoPropagator,
+                CoherentPropagator,
+                KSpacePropagator,
+                RSPropagator,
+            ),
+        ):
             distance_um = getattr(layer, "distance_um", None)
             if distance_um is None:
                 raise ValueError(
-                    "PropagationModel used directly in OpticalModule.layers must define "
-                    "distance_um, or be wrapped in Propagation"
+                    " layer in OpticalModule.layers must define "
+                    "distance_um"
                 )
             if float(distance_um) <= 0:
                 raise ValueError("distance_um must be strictly positive")
-            return Propagation(model=layer, distance_um=float(distance_um))
+            return layer
         return None
 
     @staticmethod
@@ -187,7 +185,7 @@ class OpticalModule(OpticalLayer):
         for layer in self.layers:
             propagation_layer = self._propagation_layer_view(layer)
             if propagation_layer is not None:
-                z_um += propagation_layer.distance_um
+                z_um += float(getattr(propagation_layer, "distance_um"))  # noqa: B009
                 continue
             stop_diameter_um = self._layer_stop_diameter_um(cast(OpticalLayer, layer), field)
             if stop_diameter_um is None:
@@ -202,10 +200,11 @@ class OpticalModule(OpticalLayer):
         for i, layer in enumerate(self.layers):
             propagation_layer = self._propagation_layer_view(layer)
             if propagation_layer is not None:
-                if propagation_layer.distance_um <= 0:
+                distance_um = float(getattr(propagation_layer, "distance_um"))  # noqa: B009
+                if distance_um <= 0:
                     raise ValueError("distance_um must be strictly positive")
                 z0 = z_um
-                z1 = z_um + float(propagation_layer.distance_um)
+                z1 = z_um + distance_um
                 segments[i] = (z0, z1)
                 z_um = z1
         return segments
@@ -268,23 +267,22 @@ class OpticalModule(OpticalLayer):
             return {}
         return {i: effective for i in segments}
 
-    @staticmethod
+    @classmethod
     def _layer_with_na_if_supported(
-        layer: OpticalLayer | PropagationModel,
+        cls,
+        layer: OpticalLayer,
         na_limit: float | None,
-    ) -> OpticalLayer | PropagationModel:
-        propagation_layer = OpticalModule._propagation_layer_view(layer)
+    ) -> OpticalLayer:
+        propagation_layer = cls._propagation_layer_view(layer)
         if propagation_layer is None:
-            return cast(OpticalLayer | PropagationModel, layer)
+            return layer
         if na_limit is None:
             return propagation_layer
-        model = propagation_layer.model
-        if not hasattr(model, "na_limit"):
+        if not hasattr(propagation_layer, "na_limit"):
             return propagation_layer
-        existing_na = cast(Any, model).na_limit
+        existing_na = getattr(propagation_layer, "na_limit", None)  # noqa: B009
         merged_na = na_limit if existing_na is None else min(float(existing_na), float(na_limit))
-        updated_model = replace(cast(Any, model), na_limit=merged_na)
-        return replace(propagation_layer, model=updated_model)
+        return replace(propagation_layer, na_limit=merged_na)  # type: ignore[type-var]
 
     @staticmethod
     def _field_with_domain(field: Field, domain: Literal["spatial", "kspace"]) -> Field:
@@ -299,18 +297,19 @@ class OpticalModule(OpticalLayer):
             ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
         )
 
-    @staticmethod
+    @classmethod
     def _layer_output_domain(
-        layer: OpticalLayer | PropagationModel,
+        cls,
+        layer: OpticalLayer,
         current_domain: Literal["spatial", "kspace"],
     ) -> Literal["spatial", "kspace"]:
-        propagation_layer = OpticalModule._propagation_layer_view(layer)
+        propagation_layer = cls._propagation_layer_view(layer)
         if propagation_layer is not None:
             from fouriax.optics.propagation import ASMPropagator, KSpacePropagator, RSPropagator
 
-            if isinstance(propagation_layer.model, (ASMPropagator, RSPropagator)):
+            if isinstance(propagation_layer, (ASMPropagator, RSPropagator)):
                 return "spatial"
-            if isinstance(propagation_layer.model, KSpacePropagator):
+            if isinstance(propagation_layer, KSpacePropagator):
                 return "kspace"
             return current_domain
         if isinstance(
@@ -322,23 +321,24 @@ class OpticalModule(OpticalLayer):
             return "kspace"
         return current_domain
 
-    @staticmethod
+    @classmethod
     def _resolve_auto_propagator_layer(
-        layer: OpticalLayer | PropagationModel,
+        cls,
+        layer: OpticalLayer,
         field: Field,
-    ) -> OpticalLayer | PropagationModel:
-        propagation_layer = OpticalModule._propagation_layer_view(layer)
+    ) -> OpticalLayer:
+        propagation_layer = cls._propagation_layer_view(layer)
         if propagation_layer is None:
-            return cast(OpticalLayer | PropagationModel, layer)
+            return layer
         from fouriax.optics.propagation import AutoPropagator
 
-        if not isinstance(propagation_layer.model, AutoPropagator):
+        if not isinstance(propagation_layer, AutoPropagator):
             return propagation_layer
-        resolved_model = propagation_layer.model.resolved_model(
+        resolved_model = propagation_layer.resolved_model(
             field=field,
-            distance_um=propagation_layer.distance_um,
+            distance_um=float(getattr(propagation_layer, "distance_um")),  # noqa: B009
         )
-        return replace(propagation_layer, model=resolved_model)
+        return replace(resolved_model, distance_um=getattr(propagation_layer, "distance_um"))  # noqa: B009
 
     def planned_layers(self, field: Field) -> tuple[OpticalLayer, ...]:
         """
@@ -405,7 +405,7 @@ class OpticalModule(OpticalLayer):
 
         This computes a geometric, consecutive-stop estimate:
         - Collect aperture stops from layers that expose `aperture_diameter_um`.
-        - Track axial position using `Propagation.distance_um`.
+        - Track axial position using `.distance_um`.
         - Compute limiting angle between consecutive stops.
         """
         if medium_index <= 0:
@@ -661,7 +661,7 @@ class IncoherentImager(OpticalLayer):
     """
 
     optical_layer: OpticalLayer
-    propagator: PropagationModel
+    propagator: OpticalLayer
     distance_um: float
     psf_source: Literal["impulse", "plane_wave_focus"] = "impulse"
     normalize_psf: bool = True
@@ -709,7 +709,8 @@ class IncoherentImager(OpticalLayer):
             source = Field.plane_wave(grid=spatial_field.grid, spectrum=spatial_field.spectrum)
 
         coherent = self.optical_layer.forward(source)
-        response = self.propagator.propagate(coherent, distance_um=self.distance_um).to_spatial()
+        propagator = replace(self.propagator, distance_um=self.distance_um)  # type: ignore[type-var]
+        response = propagator.forward(coherent).to_spatial()
         psf = response.intensity().astype(spatial_field.data.real.dtype)
 
         if self.enforce_nonnegative_psf:
@@ -719,10 +720,8 @@ class IncoherentImager(OpticalLayer):
             if abs(norm_distance_um - self.distance_um) < 1e-12:
                 sums = jnp.sum(psf, axis=(-2, -1), keepdims=True)
             else:
-                ref_response = self.propagator.propagate(
-                    coherent,
-                    distance_um=norm_distance_um,
-                ).to_spatial()
+                ref_propagator = replace(self.propagator, distance_um=norm_distance_um)  # type: ignore[type-var]
+                ref_response = ref_propagator.forward(coherent).to_spatial()
                 ref_psf = ref_response.intensity().astype(spatial_field.data.real.dtype)
                 if self.enforce_nonnegative_psf:
                     ref_psf = jnp.maximum(ref_psf, 0.0)

@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import jax
 import jax.numpy as jnp
 
@@ -8,7 +10,6 @@ from fouriax.optics import (
     Grid,
     OpticalModule,
     PhaseMask,
-    Propagation,
     Spectrum,
     focal_spot_loss,
 )
@@ -41,7 +42,7 @@ def test_focal_spot_loss_decreases_over_short_optimization():
             layers=(
                 PhaseMask(phase_map_rad=phase_2d[None, :, :]),
                 AmplitudeMask(amplitude_map=aperture[None, :, :]),
-                Propagation(model=propagator, distance_um=distance_um),
+                replace(propagator, distance_um=distance_um),
             )
         )
 

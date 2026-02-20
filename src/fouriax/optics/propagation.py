@@ -9,7 +9,7 @@ from jax.scipy import ndimage as jndimage
 
 from fouriax.core.fft import fftconvolve
 from fouriax.optics.bandlimit import build_na_mask
-from fouriax.optics.interfaces import PropagationModel
+from fouriax.optics.interfaces import OpticalLayer
 from fouriax.optics.model import Field, Grid, Spectrum
 
 
@@ -182,13 +182,14 @@ def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
 
 
 @dataclass(frozen=True)
-class RSPropagator(PropagationModel):
+class RSPropagator(OpticalLayer):
     """
     Rayleigh-Sommerfeld propagator based on convolution with the RS delta response.
 
     All length quantities use micrometers (um).
     """
 
+    distance_um: float | None = None
     use_sampling_planner: bool = True
     nyquist_factor: float = 2.0
     min_padding_factor: float = 2.0
@@ -216,9 +217,17 @@ class RSPropagator(PropagationModel):
         h = (z / (1j * wl * (r * r))) * jnp.exp(1j * k * r)
         return h.astype(jnp.complex64)
 
-    def propagate(self, field: Field, distance_um: float) -> Field:
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        if self.distance_um is not None:
+            return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
+        return {}
+
+    def forward(self, field: Field) -> Field:
+        distance_um = self.distance_um
         field = field.to_spatial()
         self.validate_for(field)
+        if distance_um is None:
+            raise ValueError("distance_um must be set for forward pass")
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
         if self.medium_index <= 0:
@@ -292,13 +301,14 @@ class RSPropagator(PropagationModel):
 
 
 @dataclass(frozen=True)
-class ASMPropagator(PropagationModel):
+class ASMPropagator(OpticalLayer):
     """
     Angular Spectrum Method (ASM) propagator.
 
     All length quantities use micrometers (um).
     """
 
+    distance_um: float | None = None
     use_sampling_planner: bool = True
     nyquist_factor: float = 2.0
     min_padding_factor: float = 2.0
@@ -340,9 +350,17 @@ class ASMPropagator(PropagationModel):
         )
         return transfer * na_mask.astype(jnp.complex64)
 
-    def propagate(self, field: Field, distance_um: float) -> Field:
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        if self.distance_um is not None:
+            return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
+        return {}
+
+    def forward(self, field: Field) -> Field:
+        distance_um = self.distance_um
         field = field.to_spatial()
         self.validate_for(field)
+        if distance_um is None:
+            raise ValueError("distance_um must be set for forward pass")
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
@@ -394,13 +412,14 @@ class ASMPropagator(PropagationModel):
 
 
 @dataclass(frozen=True)
-class KSpacePropagator(PropagationModel):
+class KSpacePropagator(OpticalLayer):
     """
     k-space diagonal propagator using angular-spectrum phase advance.
 
     All length quantities use micrometers (um).
     """
 
+    distance_um: float | None = None
     refractive_index: float = 1.0
     na_limit: float | None = None
 
@@ -437,9 +456,17 @@ class KSpacePropagator(PropagationModel):
         )
         return transfer * na_mask.astype(jnp.complex64)
 
-    def propagate(self, field: Field, distance_um: float) -> Field:
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        if self.distance_um is not None:
+            return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
+        return {}
+
+    def forward(self, field: Field) -> Field:
+        distance_um = self.distance_um
         field = field.to_kspace()
         self.validate_for(field)
+        if distance_um is None:
+            raise ValueError("distance_um must be set for forward pass")
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
@@ -460,7 +487,7 @@ class KSpacePropagator(PropagationModel):
 
 
 @dataclass(frozen=True)
-class AutoPropagator(PropagationModel):
+class AutoPropagator(OpticalLayer):
     """
     CoherentPropagator wrapper that auto-selects ASM, RS, or k-space propagation.
     """
@@ -587,7 +614,9 @@ class AutoPropagator(PropagationModel):
             ),
         )
 
-    def resolved_model(self, field: Field, distance_um: float) -> PropagationModel:
+    def resolved_model(
+        self, field: Field, distance_um: float
+    ) -> ASMPropagator | RSPropagator | KSpacePropagator:
         method = self.select_method(field=field, distance_um=distance_um)
         if method == "asm":
             return self.asm
@@ -595,17 +624,26 @@ class AutoPropagator(PropagationModel):
             return self.rs
         return self.kspace
 
-    def propagate(self, field: Field, distance_um: float) -> Field:
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        if self.distance_um is not None:
+            return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
+        return {}
+
+    def forward(self, field: Field) -> Field:
         self.validate_for(field)
+        distance_um = self.distance_um
+        if distance_um is None:
+            raise ValueError("distance_um must be set for forward pass")
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
         model = self.resolved_model(field=field, distance_um=distance_um)
-        return model.propagate(field, distance_um=distance_um)
+        model = replace(model, distance_um=distance_um)
+        return model.forward(field)
 
 
 @dataclass(frozen=True)
-class CoherentPropagator(PropagationModel):
+class CoherentPropagator(OpticalLayer):
     """
     Public facade over ASM/RS/k-space/auto propagators.
 
@@ -723,16 +761,22 @@ class CoherentPropagator(PropagationModel):
             raise ValueError("distance_um must be strictly positive")
         return float(resolved)
 
-    def propagate(self, field: Field, distance_um: float | None = None) -> Field:
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        if self.distance_um is not None:
+            return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
+        return {}
+
+    def forward(self, field: Field) -> Field:
         self.validate_for(field)
-        resolved_distance = self._effective_distance(distance_um)
+        resolved_distance = self._effective_distance(self.distance_um)
         if self.mode == "auto":
             auto = self._resolved_auto_model
             if auto is None:
                 raise RuntimeError("auto model was not initialized")
-            return auto.propagate(field, distance_um=resolved_distance)
+            auto = replace(auto, distance_um=resolved_distance)
+            return auto.forward(field)
         if self.mode == "asm":
-            return self._asm_model().propagate(field, distance_um=resolved_distance)
+            return replace(self._asm_model(), distance_um=resolved_distance).forward(field)
         if self.mode == "rs":
-            return self._rs_model().propagate(field, distance_um=resolved_distance)
-        return self._kspace_model().propagate(field, distance_um=resolved_distance)
+            return replace(self._rs_model(), distance_um=resolved_distance).forward(field)
+        return replace(self._kspace_model(), distance_um=resolved_distance).forward(field)

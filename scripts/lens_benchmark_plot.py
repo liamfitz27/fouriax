@@ -37,9 +37,7 @@ def run_benchmark() -> tuple[np.ndarray, np.ndarray, np.ndarray, float, float, f
         focal_length_um=focal_um,
         aperture_diameter_um=aperture_diameter_um,
     )
-    propagator = RSPropagator()
-
-    field_focus = propagator.propagate(lens.forward(field_in), distance_um=focal_um)
+    field_focus = RSPropagator(distance_um=focal_um).forward(lens.forward(field_in))
 
     intensity = np.asarray(field_focus.intensity()[0])
     center_y = grid.ny // 2

@@ -1,14 +1,11 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
-from fouriax.optics.layers import Propagation
+from fouriax.optics.layers import OpticalModule
 from fouriax.optics.model import Field
-
-if TYPE_CHECKING:
-    from fouriax.optics.layers import OpticalModule
 
 
 def _field_map(field: Field, mode: str, wavelength_idx: int, log_scale: bool) -> np.ndarray:
@@ -106,7 +103,7 @@ def plot_field_evolution(
         output = layer.forward(output)
         if hasattr(layer, "phase_map_rad"):
             pending_phase = _phase_mask_image(layer, wavelength_idx=wavelength_idx)
-        if isinstance(layer, Propagation):
+        if OpticalModule._propagation_layer_view(layer) is not None:
             prop_idx += 1
             items.append(
                 (

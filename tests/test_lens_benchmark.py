@@ -30,10 +30,8 @@ def test_thin_lens_focus_matches_airy_benchmark():
         focal_length_um=focal_um,
         aperture_diameter_um=aperture_diameter_um,
     )
-    propagator = RSPropagator()
-
     field_after_lens = lens.forward(field_in)
-    field_focus = propagator.propagate(field_after_lens, distance_um=focal_um)
+    field_focus = RSPropagator(distance_um=focal_um).forward(field_after_lens)
 
     intensity = np.asarray(field_focus.intensity()[0])
     center_y = grid.ny // 2

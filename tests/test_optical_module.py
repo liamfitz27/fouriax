@@ -16,7 +16,6 @@ from fouriax.optics import (
     KSpacePropagator,
     OpticalModule,
     PhaseMask,
-    Propagation,
     RSPropagator,
     Spectrum,
     ThinLens,
@@ -73,11 +72,10 @@ def test_propagation_layer_matches_direct_propagator():
     spectrum = Spectrum.from_scalar(0.532)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
 
-    model = ASMPropagator(use_sampling_planner=False)
-    layer = Propagation(model=model, distance_um=500.0)
+    layer = ASMPropagator(use_sampling_planner=False, distance_um=500.0)
 
     out_layer = layer.forward(field)
-    out_direct = model.propagate(field, distance_um=500.0)
+    out_direct = ASMPropagator(use_sampling_planner=False, distance_um=500.0).forward(field)
     np.testing.assert_allclose(
         np.asarray(out_layer.data),
         np.asarray(out_direct.data),
@@ -128,9 +126,9 @@ def test_optical_module_na_schedule_uses_spatial_grid_and_k_layer_diameter():
     module = OpticalModule(
         layers=(
             PhaseMask(phase_map_rad=0.0),  # spatial stop from grid extent
-            Propagation(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            ASMPropagator(use_sampling_planner=False, distance_um=10.0),
             KSpacePhaseMask(phase_map_rad=0.0, aperture_diameter_um=8.0),  # explicit k-stop
-            Propagation(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            ASMPropagator(use_sampling_planner=False, distance_um=10.0),
             ThinLens(focal_length_um=20.0, aperture_diameter_um=6.0),
         ),
         auto_apply_na=True,
@@ -164,25 +162,21 @@ def test_hybrid_spatial_k_stack_tracks_gradients():
         module = OpticalModule(
             layers=(
                 PhaseMask(phase_map_rad=p["phase_spatial"]),
-                Propagation(
-                    model=ASMPropagator(
-                        use_sampling_planner=False,
-                        medium_index=1.0,
-                        na_limit=None,
-                    ),
+                ASMPropagator(
                     distance_um=12.0,
+                    use_sampling_planner=False,
+                    medium_index=1.0,
+                    na_limit=None,
                 ),
                 KSpacePhaseMask(
                     phase_map_rad=p["phase_k"],
                     aperture_diameter_um=12.0,
                 ),
-                Propagation(
-                    model=ASMPropagator(
-                        use_sampling_planner=False,
-                        medium_index=1.0,
-                        na_limit=None,
-                    ),
+                ASMPropagator(
                     distance_um=8.0,
+                    use_sampling_planner=False,
+                    medium_index=1.0,
+                    na_limit=None,
                 ),
             ),
             sensor=IntensitySensor(sum_wavelengths=True),
@@ -223,13 +217,13 @@ def test_optical_module_plans_auto_propagator_from_current_domain():
         )
     )
     plan = module_auto.planned_layers(field_in)
-    assert isinstance(plan[1], Propagation)
-    assert isinstance(plan[1].model, KSpacePropagator)
+    assert isinstance(plan[1], KSpacePropagator)
+    assert plan[1].distance_um == pytest.approx(distance_um)
 
     module_direct = OpticalModule(
         layers=(
             KSpacePhaseMask(phase_map_rad=0.0, aperture_diameter_um=10.0),
-            Propagation(model=KSpacePropagator(refractive_index=1.0), distance_um=distance_um),
+            KSpacePropagator(refractive_index=1.0, distance_um=distance_um),
             PhaseMask(phase_map_rad=0.0),
         )
     )

@@ -8,7 +8,6 @@ from fouriax.optics import (
     KSpacePhaseMask,
     OpticalModule,
     PhaseMask,
-    Propagation,
     RSPropagator,
     Spectrum,
     ThinLens,
@@ -35,9 +34,9 @@ def test_na_schedule_local_segments_from_spatial_and_k_stops():
     module = OpticalModule(
         layers=(
             PhaseMask(phase_map_rad=0.0),  # spatial stop from grid extent
-            Propagation(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            ASMPropagator(use_sampling_planner=False, distance_um=10.0),
             KSpacePhaseMask(phase_map_rad=0.0, aperture_diameter_um=8.0),  # explicit k stop
-            Propagation(model=ASMPropagator(use_sampling_planner=False), distance_um=10.0),
+            ASMPropagator(use_sampling_planner=False, distance_um=10.0),
             ThinLens(focal_length_um=20.0, aperture_diameter_um=6.0),
         ),
         auto_apply_na=True,
@@ -59,8 +58,8 @@ def test_na_schedule_fallback_to_effective_for_unconstrained_module():
 
     module = OpticalModule(
         layers=(
-            Propagation(model=ASMPropagator(use_sampling_planner=False), distance_um=5.0),
-            Propagation(model=ASMPropagator(use_sampling_planner=False), distance_um=7.0),
+            ASMPropagator(use_sampling_planner=False, distance_um=5.0),
+            ASMPropagator(use_sampling_planner=False, distance_um=7.0),
         ),
         auto_apply_na=True,
         medium_index=1.2,
@@ -74,40 +73,29 @@ def test_na_schedule_fallback_to_effective_for_unconstrained_module():
 
 
 def test_layer_na_injection_only_applies_to_models_with_na_limit():
-    asm_layer = Propagation(
-        model=ASMPropagator(use_sampling_planner=False, na_limit=None), distance_um=5.0
-    )
-    rs_layer = Propagation(
-        model=RSPropagator(use_sampling_planner=False, na_limit=None),
-        distance_um=5.0,
-    )
+    asm_layer = ASMPropagator(use_sampling_planner=False, na_limit=None, distance_um=5.0)
+    rs_layer = RSPropagator(use_sampling_planner=False, na_limit=None, distance_um=5.0)
 
     asm_updated = OpticalModule._layer_with_na_if_supported(asm_layer, 0.25)
     rs_updated = OpticalModule._layer_with_na_if_supported(rs_layer, 0.25)
 
-    assert isinstance(asm_updated, Propagation)
-    assert isinstance(rs_updated, Propagation)
-    assert asm_updated.model.na_limit == 0.25
-    assert rs_updated.model.na_limit == 0.25
+    assert isinstance(asm_updated, ASMPropagator)
+    assert isinstance(rs_updated, RSPropagator)
+    assert asm_updated.na_limit == 0.25
+    assert rs_updated.na_limit == 0.25
 
 
 def test_layer_na_injection_keeps_stricter_existing_limit():
-    asm_layer = Propagation(
-        model=ASMPropagator(use_sampling_planner=False, na_limit=0.15),
-        distance_um=5.0,
-    )
-    rs_layer = Propagation(
-        model=RSPropagator(use_sampling_planner=False, na_limit=0.12),
-        distance_um=5.0,
-    )
+    asm_layer = ASMPropagator(use_sampling_planner=False, na_limit=0.15, distance_um=5.0)
+    rs_layer = RSPropagator(use_sampling_planner=False, na_limit=0.12, distance_um=5.0)
 
     asm_updated = OpticalModule._layer_with_na_if_supported(asm_layer, 0.25)
     rs_updated = OpticalModule._layer_with_na_if_supported(rs_layer, 0.25)
 
-    assert isinstance(asm_updated, Propagation)
-    assert isinstance(rs_updated, Propagation)
-    assert np.isclose(asm_updated.model.na_limit, 0.15)
-    assert np.isclose(rs_updated.model.na_limit, 0.12)
+    assert isinstance(asm_updated, ASMPropagator)
+    assert isinstance(rs_updated, RSPropagator)
+    assert np.isclose(asm_updated.na_limit, 0.15)
+    assert np.isclose(rs_updated.na_limit, 0.12)
 
 
 def _out_of_band_energy_ratio(field: Field, wavelength_index: int, na_limit: float) -> float:
@@ -130,11 +118,18 @@ def test_rs_propagator_na_limit_suppresses_out_of_band_spectrum():
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
     na_limit = 0.1
 
-    rs_unlimited = RSPropagator(use_sampling_planner=False, medium_index=1.0, na_limit=None)
-    rs_limited = RSPropagator(use_sampling_planner=False, medium_index=1.0, na_limit=na_limit)
-
-    out_unlimited = rs_unlimited.propagate(field, distance_um=20.0)
-    out_limited = rs_limited.propagate(field, distance_um=20.0)
+    out_unlimited = RSPropagator(
+        use_sampling_planner=False,
+        medium_index=1.0,
+        na_limit=None,
+        distance_um=20.0,
+    ).forward(field)
+    out_limited = RSPropagator(
+        use_sampling_planner=False,
+        medium_index=1.0,
+        na_limit=na_limit,
+        distance_um=20.0,
+    ).forward(field)
 
     ratio_unlimited = _out_of_band_energy_ratio(
         out_unlimited,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+from dataclasses import replace
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -18,7 +19,6 @@ from fouriax.optics import (
     KSpaceAmplitudeMask,
     OpticalModule,
     PhaseMask,
-    Propagation,
     Spectrum,
     ThinLens,
 )
@@ -155,9 +155,9 @@ def main() -> None:
             module_4f = OpticalModule(
                 layers=(
                     ThinLens(focal_length_um=f_um, aperture_diameter_um=aperture),
-                    Propagation(model=asm_4f, distance_um=f_um),
+                    replace(asm_4f, distance_um=f_um),
                     AmplitudeMask(amplitude_map=spatial_fourier_stop),
-                    Propagation(model=asm_4f, distance_um=f_um),
+                    replace(asm_4f, distance_um=f_um),
                     ThinLens(focal_length_um=f_um, aperture_diameter_um=aperture),
                 ),
                 sensor=IntensitySensor(sum_wavelengths=True),

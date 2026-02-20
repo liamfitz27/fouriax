@@ -54,8 +54,8 @@ def test_k_layer_and_k_propagator_auto_convert_spatial_input():
     out_k = KSpacePhaseMask(phase_map_rad=0.2).forward(field)
     assert out_k.domain == "kspace"
 
-    out_prop = KSpacePropagator(refractive_index=1.0).propagate(field, distance_um=5.0)
+    out_prop = KSpacePropagator(refractive_index=1.0, distance_um=5.0).forward(field)
     assert out_prop.domain == "kspace"
 
-    out_asm = ASMPropagator(use_sampling_planner=False).propagate(out_k, distance_um=5.0)
+    out_asm = ASMPropagator(use_sampling_planner=False, distance_um=5.0).forward(out_k)
     assert out_asm.domain == "spatial"
