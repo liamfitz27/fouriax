@@ -12,7 +12,6 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
-    CoherentPropagator,
     Field,
     Grid,
     MetaAtomInterpolationLayer,
@@ -21,6 +20,7 @@ from fouriax.optics import (
     OpticalModule,
     PhaseMask,
     Spectrum,
+    plan_propagation,
 )
 
 SPEED_OF_LIGHT_M_PER_S = 299_792_458.0
@@ -95,7 +95,12 @@ def main() -> None:
     distance_um = 100.0
     target_xy = (grid.nx // 2, grid.ny // 2)
 
-    propagator = CoherentPropagator(mode="auto", distance_um=distance_um)
+    propagator = plan_propagation(
+        mode="auto",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+    )
 
     side_axis = library.parameter_axes[0]
     min_bounds = jnp.array([side_axis[0]], dtype=jnp.float32)

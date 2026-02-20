@@ -10,14 +10,16 @@ import numpy as np
 
 from fouriax.optics import (
     AmplitudeMask,
-    CoherentPropagator,
     Field,
+    FourierTransform,
     Grid,
     IntensitySensor,
+    InverseFourierTransform,
     KSpaceAmplitudeMask,
     OpticalModule,
     Spectrum,
     ThinLens,
+    plan_propagation,
 )
 
 ARTIFACTS_DIR = Path("artifacts")
@@ -123,7 +125,12 @@ def main() -> None:
     input_aperture = _spatial_circular_aperture(grid, LENS_APERTURE_UM)
 
     # (1) Physical 4f path.
-    propagator_4f = CoherentPropagator(mode="auto", distance_um=f_um)
+    propagator_4f = plan_propagation(
+        mode="auto",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=f_um,
+    )
     module_4f = OpticalModule(
         layers=(
             ThinLens(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
@@ -133,22 +140,17 @@ def main() -> None:
             ThinLens(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
         ),
         sensor=IntensitySensor(sum_wavelengths=True),
-        auto_apply_na=True,
-        medium_index=N_MEDIUM,
-        na_fallback_to_effective=False,
     )
 
     # (2) k-space surrogate.
     module_k = OpticalModule(
         layers=(
             AmplitudeMask(amplitude_map=input_aperture),
+            FourierTransform(),
             KSpaceAmplitudeMask(amplitude_map=k_stop, aperture_diameter_um=2.0 * f_um * NA_STOP),
+            InverseFourierTransform(),
         ),
         sensor=IntensitySensor(sum_wavelengths=True),
-        # No propagation segments in this surrogate stack; NA is explicit in k_stop.
-        auto_apply_na=False,
-        medium_index=N_MEDIUM,
-        na_fallback_to_effective=False,
     )
 
     # (3) Raw FFT baseline (pure jax.numpy).
@@ -163,7 +165,7 @@ def main() -> None:
     out_k = np.asarray(module_k.measure(field_in))
 
     print("=== 4f Comparison ===")
-    print(f"CoherentPropagator(mode='auto') precomputed_method={propagator_4f.precomputed_method}")
+    print(f"auto-selected propagator type={type(propagator_4f).__name__}")
     print(f"f_um={f_um:.6f}, NA={NA_STOP:.4f}, lens_aperture_um={LENS_APERTURE_UM:.1f}")
     print(
         "MSE: "

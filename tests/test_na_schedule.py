@@ -13,6 +13,7 @@ from fouriax.optics import (
     ThinLens,
     build_na_mask,
 )
+from fouriax.optics.na_planning import layer_with_na_if_supported, na_schedule
 
 
 def test_build_na_mask_respects_medium_cap():
@@ -38,12 +39,10 @@ def test_na_schedule_local_segments_from_spatial_and_k_stops():
             KSpacePhaseMask(phase_map_rad=0.0, aperture_diameter_um=8.0),  # explicit k stop
             ASMPropagator(use_sampling_planner=False, distance_um=10.0),
             ThinLens(focal_length_um=20.0, aperture_diameter_um=6.0),
-        ),
-        auto_apply_na=True,
-        medium_index=1.0,
+        )
     )
 
-    schedule = module.na_schedule(field)
+    schedule = na_schedule(module.layers, field, medium_index=1.0)
     assert 1 in schedule
     assert 3 in schedule
     assert schedule[1] > 0.0
@@ -60,13 +59,10 @@ def test_na_schedule_fallback_to_effective_for_unconstrained_module():
         layers=(
             ASMPropagator(use_sampling_planner=False, distance_um=5.0),
             ASMPropagator(use_sampling_planner=False, distance_um=7.0),
-        ),
-        auto_apply_na=True,
-        medium_index=1.2,
-        na_fallback_to_effective=True,
+        )
     )
 
-    schedule = module.na_schedule(field)
+    schedule = na_schedule(module.layers, field, medium_index=1.2, fallback_to_effective=True)
     assert set(schedule.keys()) == {0, 1}
     assert np.isclose(schedule[0], 1.2)
     assert np.isclose(schedule[1], 1.2)
@@ -76,8 +72,8 @@ def test_layer_na_injection_only_applies_to_models_with_na_limit():
     asm_layer = ASMPropagator(use_sampling_planner=False, na_limit=None, distance_um=5.0)
     rs_layer = RSPropagator(use_sampling_planner=False, na_limit=None, distance_um=5.0)
 
-    asm_updated = OpticalModule._layer_with_na_if_supported(asm_layer, 0.25)
-    rs_updated = OpticalModule._layer_with_na_if_supported(rs_layer, 0.25)
+    asm_updated = layer_with_na_if_supported(asm_layer, 0.25)
+    rs_updated = layer_with_na_if_supported(rs_layer, 0.25)
 
     assert isinstance(asm_updated, ASMPropagator)
     assert isinstance(rs_updated, RSPropagator)
@@ -89,8 +85,8 @@ def test_layer_na_injection_keeps_stricter_existing_limit():
     asm_layer = ASMPropagator(use_sampling_planner=False, na_limit=0.15, distance_um=5.0)
     rs_layer = RSPropagator(use_sampling_planner=False, na_limit=0.12, distance_um=5.0)
 
-    asm_updated = OpticalModule._layer_with_na_if_supported(asm_layer, 0.25)
-    rs_updated = OpticalModule._layer_with_na_if_supported(rs_layer, 0.25)
+    asm_updated = layer_with_na_if_supported(asm_layer, 0.25)
+    rs_updated = layer_with_na_if_supported(rs_layer, 0.25)
 
     assert isinstance(asm_updated, ASMPropagator)
     assert isinstance(rs_updated, RSPropagator)

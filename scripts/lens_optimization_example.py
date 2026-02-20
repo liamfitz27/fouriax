@@ -13,13 +13,13 @@ import optax
 
 from fouriax.optics import (
     AmplitudeMask,
-    CoherentPropagator,
     Field,
     Grid,
     OpticalModule,
     PhaseMask,
     Spectrum,
     focal_spot_loss,
+    plan_propagation,
 )
 
 
@@ -41,7 +41,12 @@ def main() -> None:
     target_xy = (grid.nx // 2, grid.ny // 2)
     window_px = 2
 
-    propagator = CoherentPropagator(mode="auto", distance_um=distance_um)
+    propagator = plan_propagation(
+        mode="auto",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+    )
 
     def loss_fn(raw_phase_map: jnp.ndarray) -> jnp.ndarray:
         phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase_map)

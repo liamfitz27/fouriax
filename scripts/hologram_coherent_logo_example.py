@@ -14,12 +14,12 @@ import optax
 from PIL import Image
 
 from fouriax.optics import (
-    CoherentPropagator,
     Field,
     Grid,
     OpticalModule,
     PhaseMask,
     Spectrum,
+    plan_propagation,
 )
 
 IMAGE_PATH = Path("/Users/liam/Downloads/logo.jpg")
@@ -60,12 +60,11 @@ def main() -> None:
     target = load_logo_target(IMAGE_PATH, grid=grid)
 
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
-    propagator = CoherentPropagator(
+    propagator = plan_propagation(
         mode="auto",
+        grid=grid,
+        spectrum=spectrum,
         distance_um=args.distance_um,
-        setup_grid=grid,
-        setup_spectrum=spectrum,
-        setup_distance_um=args.distance_um,
     )
 
     def loss_fn(raw_phase: jnp.ndarray) -> jnp.ndarray:
@@ -126,7 +125,7 @@ def main() -> None:
         "initial_loss": history[0],
         "best_loss": best_loss,
         "final_loss": history[-1],
-        "precomputed_method": propagator.precomputed_method,
+        "propagator_type": type(propagator).__name__,
     }
     summary_path = out_dir / "hologram_coherent_logo_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
