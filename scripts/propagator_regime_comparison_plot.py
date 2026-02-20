@@ -60,10 +60,8 @@ def run_case(
     )
     field_lens = lens.forward(field_in)
 
-    asm = ASMPropagator()
-    rs = RSPropagator()
-    out_asm = asm.propagate(field_lens, distance_um=distance_um)
-    out_rs = rs.propagate(field_lens, distance_um=distance_um)
+    out_asm = ASMPropagator(distance_um=distance_um).forward(field_lens)
+    out_rs = RSPropagator(distance_um=distance_um).forward(field_lens)
 
     r_um, profile_asm = radial_row_profile(np.asarray(out_asm.intensity()[0]), grid.dx_um)
     _, profile_rs = radial_row_profile(np.asarray(out_rs.intensity()[0]), grid.dx_um)

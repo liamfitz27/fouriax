@@ -35,13 +35,3 @@ class Sensor(ABC):
         field.validate()
 
 
-class PropagationModel(ABC):
-    """Base interface for free-space field propagation."""
-
-    @abstractmethod
-    def propagate(self, field: Field, distance_um: float) -> Field:
-        """Propagate field over distance in micrometers."""
-
-    def validate_for(self, field: Field) -> None:
-        """Validate model compatibility with the input field."""
-        field.validate()

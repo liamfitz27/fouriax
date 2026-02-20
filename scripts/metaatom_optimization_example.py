@@ -17,9 +17,9 @@ from fouriax.optics import (
     Grid,
     MetaAtomInterpolationLayer,
     MetaAtomLibrary,
+    OpticalLayer,
     OpticalModule,
     PhaseMask,
-    Propagation,
     Spectrum,
 )
 
@@ -60,7 +60,7 @@ def build_module(
     raw_params: jnp.ndarray,
     min_bounds: jnp.ndarray,
     max_bounds: jnp.ndarray,
-    propagator: Propagation,
+    propagator: OpticalLayer,
 ) -> OpticalModule:
     return OpticalModule(
         layers=(

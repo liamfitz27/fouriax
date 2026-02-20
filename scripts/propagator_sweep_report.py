@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -76,15 +77,16 @@ def timed_propagate(
     repeats: int,
     warmup: int,
 ) -> tuple[Field, float]:
+    layer = replace(propagator, distance_um=distance_um)
     out = None
     for _ in range(warmup):
-        out = propagator.propagate(field, distance_um=distance_um)
+        out = layer.forward(field)
         out.data.block_until_ready()
 
     times_ms: list[float] = []
     for _ in range(repeats):
         t0 = time.perf_counter()
-        out = propagator.propagate(field, distance_um=distance_um)
+        out = layer.forward(field)
         out.data.block_until_ready()
         times_ms.append(1e3 * (time.perf_counter() - t0))
 

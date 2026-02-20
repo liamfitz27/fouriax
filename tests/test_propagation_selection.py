@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from scipy.special import j1
@@ -58,10 +60,10 @@ def test_specific_propagators_warn_when_used_outside_recommended_regime():
     z_crit = critical_distance_um(grid=grid, spectrum=spectrum)
 
     with pytest.warns(UserWarning, match="ASM selected outside recommended regime"):
-        ASMPropagator(use_sampling_planner=False).propagate(field, distance_um=2.0 * z_crit)
+        ASMPropagator(use_sampling_planner=False, distance_um=2.0 * z_crit).forward(field)
 
     with pytest.warns(UserWarning, match="RS selected outside recommended regime"):
-        RSPropagator(use_sampling_planner=False).propagate(field, distance_um=0.5 * z_crit)
+        RSPropagator(use_sampling_planner=False, distance_um=0.5 * z_crit).forward(field)
 
 
 def _airy_profile(
@@ -130,8 +132,8 @@ def test_auto_selection_matches_best_method_in_near_and_far_regimes():
         )
         field_lens = lens.forward(field_in)
 
-        out_asm = asm.propagate(field_lens, distance_um=distance_um)
-        out_rs = rs.propagate(field_lens, distance_um=distance_um)
+        out_asm = replace(asm, distance_um=distance_um).forward(field_lens)
+        out_rs = replace(rs, distance_um=distance_um).forward(field_lens)
         mae_asm = _mae_vs_airy(
             propagated_intensity_2d=np.asarray(out_asm.intensity()[0]),
             wavelength_um=wavelength_um,
@@ -173,8 +175,8 @@ def test_auto_propagator_uses_kspace_model_for_kspace_input():
         kspace=KSpacePropagator(refractive_index=1.0),
     )
 
-    out_auto = auto.propagate(field_k, distance_um=distance_um)
-    out_k = auto.kspace.propagate(field_k, distance_um=distance_um)
+    out_auto = replace(auto, distance_um=distance_um).forward(field_k)
+    out_k = replace(auto.kspace, distance_um=distance_um).forward(field_k)
 
     np.testing.assert_allclose(np.asarray(out_auto.data), np.asarray(out_k.data), atol=1e-6)
     assert out_auto.domain == "kspace"
@@ -193,19 +195,19 @@ def test_propagator_facade_mode_dispatch():
 
     out_asm = CoherentPropagator(
         mode="asm", distance_um=distance_um, use_sampling_planner=False
-    ).propagate(field)
-    ref_asm = ASMPropagator(use_sampling_planner=False).propagate(field, distance_um=distance_um)
+    ).forward(field)
+    ref_asm = ASMPropagator(use_sampling_planner=False, distance_um=distance_um).forward(field)
     np.testing.assert_allclose(np.asarray(out_asm.data), np.asarray(ref_asm.data), atol=1e-6)
 
     out_rs = CoherentPropagator(
         mode="rs", distance_um=distance_um, use_sampling_planner=False
-    ).propagate(field)
-    ref_rs = RSPropagator(use_sampling_planner=False).propagate(field, distance_um=distance_um)
+    ).forward(field)
+    ref_rs = RSPropagator(use_sampling_planner=False, distance_um=distance_um).forward(field)
     np.testing.assert_allclose(np.asarray(out_rs.data), np.asarray(ref_rs.data), atol=1e-6)
 
     field_k = field.to_kspace()
-    out_k = CoherentPropagator(mode="kspace", distance_um=distance_um).propagate(field_k)
-    ref_k = KSpacePropagator().propagate(field_k, distance_um=distance_um)
+    out_k = CoherentPropagator(mode="kspace", distance_um=distance_um).forward(field_k)
+    ref_k = KSpacePropagator(distance_um=distance_um).forward(field_k)
     np.testing.assert_allclose(np.asarray(out_k.data), np.asarray(ref_k.data), atol=1e-6)
 
 

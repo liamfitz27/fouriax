@@ -1,7 +1,7 @@
 """Core optics data models."""
 
 from fouriax.optics.bandlimit import build_na_mask
-from fouriax.optics.interfaces import OpticalLayer, PropagationModel, Sensor
+from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
     ComplexMask,
@@ -11,7 +11,6 @@ from fouriax.optics.layers import (
     KSpacePhaseMask,
     OpticalModule,
     PhaseMask,
-    Propagation,
     ThinLens,
 )
 from fouriax.optics.losses import (
@@ -46,8 +45,6 @@ __all__ = [
     "build_na_mask",
     "OpticalLayer",
     "Sensor",
-    "PropagationModel",
-    "Propagation",
     "OpticalModule",
     "PhaseMask",
     "AmplitudeMask",

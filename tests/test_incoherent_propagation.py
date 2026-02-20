@@ -43,7 +43,17 @@ def test_psf_imager_build_psf_matches_manual_impulse_path():
         grid=grid,
         spectrum=spectrum,
     )
-    expected = rs.propagate(lens.forward(impulse), distance_um=60.0).to_spatial().intensity()
+    expected = (
+        RSPropagator(
+            use_sampling_planner=False,
+            warn_on_regime_mismatch=False,
+            na_limit=0.08,
+            distance_um=60.0,
+        )
+        .forward(lens.forward(impulse))
+        .to_spatial()
+        .intensity()
+    )
     np.testing.assert_allclose(np.asarray(psf), np.asarray(expected), atol=1e-6)
 
 
@@ -61,7 +71,17 @@ def test_psf_imager_build_psf_matches_manual_plane_wave_path():
 
     field_ref = Field.plane_wave(grid=grid, spectrum=spectrum)
     psf = imager.build_psf(field_ref)
-    expected = rs.propagate(lens.forward(field_ref), distance_um=70.0).to_spatial().intensity()
+    expected = (
+        RSPropagator(
+            use_sampling_planner=False,
+            warn_on_regime_mismatch=False,
+            na_limit=0.07,
+            distance_um=70.0,
+        )
+        .forward(lens.forward(field_ref))
+        .to_spatial()
+        .intensity()
+    )
     np.testing.assert_allclose(np.asarray(psf), np.asarray(expected), atol=1e-6)
 
 
