@@ -5,13 +5,13 @@ import jax.numpy as jnp
 
 from fouriax.optics import (
     AmplitudeMask,
-    AutoPropagator,
     Field,
     Grid,
     OpticalModule,
     PhaseMask,
     Spectrum,
     focal_spot_loss,
+    plan_propagation,
 )
 
 
@@ -29,10 +29,11 @@ def test_focal_spot_loss_decreases_over_short_optimization():
     aperture = _circular_aperture(grid, diameter_um=20.0)
 
     distance_um = 200.0
-    propagator = AutoPropagator(
-        setup_grid=grid,
-        setup_spectrum=spectrum,
-        setup_distance_um=distance_um,
+    propagator = plan_propagation(
+        mode="auto",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
     )
 
     target_xy = (grid.nx // 2, grid.ny // 2)

@@ -14,8 +14,10 @@ from fouriax.optics import (
     AmplitudeMask,
     ASMPropagator,
     Field,
+    FourierTransform,
     Grid,
     IntensitySensor,
+    InverseFourierTransform,
     KSpaceAmplitudeMask,
     OpticalModule,
     PhaseMask,
@@ -161,20 +163,16 @@ def main() -> None:
                     ThinLens(focal_length_um=f_um, aperture_diameter_um=aperture),
                 ),
                 sensor=IntensitySensor(sum_wavelengths=True),
-                auto_apply_na=False,
-                medium_index=N_MEDIUM,
-                na_fallback_to_effective=False,
             )
             module_k = OpticalModule(
                 layers=(
                     AmplitudeMask(amplitude_map=input_aperture),
+                    FourierTransform(),
                     KSpaceAmplitudeMask(amplitude_map=k_stop, aperture_diameter_um=2.0 * f_um * na),
+                    InverseFourierTransform(),
                     PhaseMask(phase_map_rad=0.0),
                 ),
                 sensor=IntensitySensor(sum_wavelengths=True),
-                auto_apply_na=False,
-                medium_index=N_MEDIUM,
-                na_fallback_to_effective=False,
             )
 
             out_4f = np.asarray(module_4f.measure(field_in))

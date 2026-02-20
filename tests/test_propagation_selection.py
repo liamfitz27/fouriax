@@ -6,9 +6,8 @@ from scipy.special import j1
 
 from fouriax.optics import (
     ASMPropagator,
-    AutoPropagator,
-    CoherentPropagator,
     Field,
+    FourierTransform,
     Grid,
     KSpacePropagator,
     RSPropagator,
@@ -16,6 +15,7 @@ from fouriax.optics import (
 )
 from fouriax.optics.propagation import (
     critical_distance_um,
+    plan_propagation,
     recommend_nyquist_grid,
     select_propagator_method,
 )
@@ -112,7 +112,7 @@ def _mae_vs_airy(
     return float(np.mean(np.abs(sim - airy)))
 
 
-def test_auto_selection_matches_best_method_in_near_and_far_regimes():
+def test_plan_propagation_selection_matches_best_method_in_near_and_far_regimes():
     wavelength_um = 0.532
     grid = Grid.from_extent(nx=256, ny=256, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(wavelength_um)
@@ -149,13 +149,18 @@ def test_auto_selection_matches_best_method_in_near_and_far_regimes():
             dx_um=grid.dx_um,
         )
 
-        auto = AutoPropagator(
-            setup_grid=grid,
-            setup_spectrum=spectrum,
-            setup_distance_um=distance_um,
+        planned = plan_propagation(
+            mode="auto",
+            grid=grid,
+            spectrum=spectrum,
+            distance_um=distance_um,
+            input_domain="spatial",
             nyquist_factor=2.0,
         )
-        assert auto.precomputed_method == expected_method
+        if expected_method == "asm":
+            assert isinstance(planned, ASMPropagator)
+        else:
+            assert isinstance(planned, RSPropagator)
 
         if expected_method == "asm":
             assert mae_asm < mae_rs
@@ -163,64 +168,84 @@ def test_auto_selection_matches_best_method_in_near_and_far_regimes():
             assert mae_rs < mae_asm
 
 
-def test_auto_propagator_uses_kspace_model_for_kspace_input():
+def test_plan_propagation_uses_kspace_model_for_kspace_input():
     grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     field_k = Field.plane_wave(grid=grid, spectrum=spectrum).to_kspace()
     distance_um = 25.0
 
-    auto = AutoPropagator(
-        asm=ASMPropagator(use_sampling_planner=False),
-        rs=RSPropagator(use_sampling_planner=False),
-        kspace=KSpacePropagator(refractive_index=1.0),
+    planned = plan_propagation(
+        mode="auto",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+        input_domain="kspace",
+        refractive_index=1.0,
     )
 
-    out_auto = replace(auto, distance_um=distance_um).forward(field_k)
-    out_k = replace(auto.kspace, distance_um=distance_um).forward(field_k)
+    assert isinstance(planned, KSpacePropagator)
+    out_auto = planned.forward(field_k)
+    out_k = KSpacePropagator(refractive_index=1.0, distance_um=distance_um).forward(field_k)
 
     np.testing.assert_allclose(np.asarray(out_auto.data), np.asarray(out_k.data), atol=1e-6)
     assert out_auto.domain == "kspace"
 
 
-def test_auto_propagator_rejects_invalid_precomputed_method():
-    with pytest.raises(ValueError, match="precomputed_method must be one of"):
-        AutoPropagator(precomputed_method="invalid")  # type: ignore[arg-type]
+def test_plan_propagation_rejects_invalid_mode():
+    with pytest.raises(ValueError, match="mode must be one of"):
+        plan_propagation(  # type: ignore[arg-type]
+            mode="invalid",
+            grid=Grid.from_extent(nx=16, ny=16, dx_um=1.0, dy_um=1.0),
+            spectrum=Spectrum.from_scalar(0.532),
+            distance_um=10.0,
+        )
 
 
-def test_propagator_facade_mode_dispatch():
+def test_plan_propagation_mode_dispatch():
     grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
     distance_um = 25.0
 
-    out_asm = CoherentPropagator(
-        mode="asm", distance_um=distance_um, use_sampling_planner=False
+    out_asm = plan_propagation(
+        mode="asm",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+        use_sampling_planner=False,
     ).forward(field)
     ref_asm = ASMPropagator(use_sampling_planner=False, distance_um=distance_um).forward(field)
     np.testing.assert_allclose(np.asarray(out_asm.data), np.asarray(ref_asm.data), atol=1e-6)
 
-    out_rs = CoherentPropagator(
-        mode="rs", distance_um=distance_um, use_sampling_planner=False
+    out_rs = plan_propagation(
+        mode="rs",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+        use_sampling_planner=False,
     ).forward(field)
     ref_rs = RSPropagator(use_sampling_planner=False, distance_um=distance_um).forward(field)
     np.testing.assert_allclose(np.asarray(out_rs.data), np.asarray(ref_rs.data), atol=1e-6)
 
-    field_k = field.to_kspace()
-    out_k = CoherentPropagator(mode="kspace", distance_um=distance_um).forward(field_k)
+    field_k = FourierTransform().forward(field)
+    out_k = plan_propagation(
+        mode="kspace",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+    ).forward(field_k)
     ref_k = KSpacePropagator(distance_um=distance_um).forward(field_k)
     np.testing.assert_allclose(np.asarray(out_k.data), np.asarray(ref_k.data), atol=1e-6)
 
 
-def test_propagator_facade_auto_precomputes_method_and_grid():
+def test_plan_propagation_auto_selects_rs_for_far_field():
     grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     z_crit = critical_distance_um(grid=grid, spectrum=spectrum)
-    p = CoherentPropagator(
+    p = plan_propagation(
         mode="auto",
-        setup_grid=grid,
-        setup_spectrum=spectrum,
-        setup_distance_um=2.0 * z_crit,
         distance_um=2.0 * z_crit,
+        grid=grid,
+        spectrum=spectrum,
     )
-    assert p.precomputed_method == "rs"
-    assert p.resolved_precomputed_grid is not None
+    assert isinstance(p, RSPropagator)

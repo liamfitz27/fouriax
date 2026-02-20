@@ -5,7 +5,9 @@ from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
     ComplexMask,
+    FourierTransform,
     IncoherentImager,
+    InverseFourierTransform,
     KSpaceAmplitudeMask,
     KSpaceComplexMask,
     KSpacePhaseMask,
@@ -25,14 +27,22 @@ from fouriax.optics.losses import (
 )
 from fouriax.optics.meta_atoms import MetaAtomInterpolationLayer, MetaAtomLibrary
 from fouriax.optics.model import Field, Grid, Spectrum
+from fouriax.optics.na_planning import (
+    apply_na_limits,
+    collect_propagation_segments,
+    collect_stops,
+    effective_na,
+    layer_with_na_if_supported,
+    na_schedule,
+    propagation_layer_view,
+)
 from fouriax.optics.plotting import plot_field_evolution
 from fouriax.optics.propagation import (
     ASMPropagator,
-    AutoPropagator,
-    CoherentPropagator,
     KSpacePropagator,
     RSPropagator,
     critical_distance_um,
+    plan_propagation,
     recommend_nyquist_grid,
     select_propagator_method,
 )
@@ -49,6 +59,8 @@ __all__ = [
     "PhaseMask",
     "AmplitudeMask",
     "ComplexMask",
+    "FourierTransform",
+    "InverseFourierTransform",
     "KSpacePhaseMask",
     "KSpaceAmplitudeMask",
     "KSpaceComplexMask",
@@ -69,10 +81,16 @@ __all__ = [
     "ASMPropagator",
     "RSPropagator",
     "KSpacePropagator",
-    "CoherentPropagator",
-    "AutoPropagator",
+    "plan_propagation",
     "critical_distance_um",
     "select_propagator_method",
     "recommend_nyquist_grid",
     "plot_field_evolution",
+    "propagation_layer_view",
+    "collect_stops",
+    "collect_propagation_segments",
+    "effective_na",
+    "na_schedule",
+    "layer_with_na_if_supported",
+    "apply_na_limits",
 ]

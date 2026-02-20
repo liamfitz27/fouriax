@@ -6,20 +6,20 @@ import pytest
 from fouriax.optics import (
     AmplitudeMask,
     ASMPropagator,
-    AutoPropagator,
     ComplexMask,
     Field,
     FieldReadout,
+    FourierTransform,
     Grid,
     IntensitySensor,
+    InverseFourierTransform,
     KSpacePhaseMask,
-    KSpacePropagator,
     OpticalModule,
     PhaseMask,
-    RSPropagator,
     Spectrum,
     ThinLens,
 )
+from fouriax.optics.na_planning import na_schedule
 
 
 def test_optical_module_applies_layers_in_order():
@@ -118,7 +118,7 @@ def test_intensity_sensor_and_field_readout_representations():
     )
 
 
-def test_optical_module_na_schedule_uses_spatial_grid_and_k_layer_diameter():
+def test_na_schedule_uses_spatial_grid_and_k_layer_diameter():
     grid = Grid.from_extent(nx=40, ny=20, dx_um=1.0, dy_um=1.0)  # min diameter = 20 um
     spectrum = Spectrum.from_scalar(0.532)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
@@ -130,12 +130,10 @@ def test_optical_module_na_schedule_uses_spatial_grid_and_k_layer_diameter():
             KSpacePhaseMask(phase_map_rad=0.0, aperture_diameter_um=8.0),  # explicit k-stop
             ASMPropagator(use_sampling_planner=False, distance_um=10.0),
             ThinLens(focal_length_um=20.0, aperture_diameter_um=6.0),
-        ),
-        auto_apply_na=True,
-        medium_index=1.0,
+        )
     )
 
-    schedule = module.na_schedule(field)
+    schedule = na_schedule(module.layers, field, medium_index=1.0)
     assert 1 in schedule
     assert 3 in schedule
     assert schedule[1] > 0.0
@@ -168,10 +166,12 @@ def test_hybrid_spatial_k_stack_tracks_gradients():
                     medium_index=1.0,
                     na_limit=None,
                 ),
+                FourierTransform(),
                 KSpacePhaseMask(
                     phase_map_rad=p["phase_k"],
                     aperture_diameter_um=12.0,
                 ),
+                InverseFourierTransform(),
                 ASMPropagator(
                     distance_um=8.0,
                     use_sampling_planner=False,
@@ -180,9 +180,6 @@ def test_hybrid_spatial_k_stack_tracks_gradients():
                 ),
             ),
             sensor=IntensitySensor(sum_wavelengths=True),
-            auto_apply_na=True,
-            medium_index=1.0,
-            na_fallback_to_effective=False,
         )
         measured = module.measure(field_in)
         return jnp.mean((measured - target) ** 2)
@@ -196,48 +193,37 @@ def test_hybrid_spatial_k_stack_tracks_gradients():
     assert float(jnp.linalg.norm(grads["phase_k"])) > 1e-10
 
 
-def test_optical_module_plans_auto_propagator_from_current_domain():
-    grid = Grid.from_extent(nx=32, ny=32, dx_um=1.0, dy_um=1.0)
-    spectrum = Spectrum.from_scalar(0.532)
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
-    distance_um = 15.0
-
-    auto = AutoPropagator(
-        asm=ASMPropagator(use_sampling_planner=False),
-        rs=RSPropagator(use_sampling_planner=False),
-        kspace=KSpacePropagator(refractive_index=1.0),
-        distance_um=distance_um,
-    )
-
-    module_auto = OpticalModule(
-        layers=(
-            KSpacePhaseMask(phase_map_rad=0.0, aperture_diameter_um=10.0),
-            auto,
-            PhaseMask(phase_map_rad=0.0),
-        )
-    )
-    plan = module_auto.planned_layers(field_in)
-    assert isinstance(plan[1], KSpacePropagator)
-    assert plan[1].distance_um == pytest.approx(distance_um)
-
-    module_direct = OpticalModule(
-        layers=(
-            KSpacePhaseMask(phase_map_rad=0.0, aperture_diameter_um=10.0),
-            KSpacePropagator(refractive_index=1.0, distance_um=distance_um),
-            PhaseMask(phase_map_rad=0.0),
-        )
-    )
-
-    out_auto = module_auto.forward(field_in)
-    out_direct = module_direct.forward(field_in)
-    np.testing.assert_allclose(np.asarray(out_auto.data), np.asarray(out_direct.data), atol=1e-6)
-
-
 def test_optical_module_rejects_inline_propagator_without_distance():
     grid = Grid.from_extent(nx=16, ny=16, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
 
-    module = OpticalModule(layers=(AutoPropagator(),))
-    with pytest.raises(ValueError, match="must define distance_um"):
+    module = OpticalModule(layers=(ASMPropagator(),))
+    with pytest.raises(ValueError, match="distance_um must be set for forward pass"):
         module.forward(field)
+
+
+def test_optical_module_requires_explicit_domain_transforms():
+    grid = Grid.from_extent(nx=16, ny=16, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    field = Field.plane_wave(grid=grid, spectrum=spectrum)
+
+    module_bad = OpticalModule(
+        layers=(
+            PhaseMask(phase_map_rad=0.0),
+            KSpacePhaseMask(phase_map_rad=0.0),
+        )
+    )
+    with pytest.raises(ValueError, match="requires kspace-domain input"):
+        module_bad.forward(field)
+
+    module_ok = OpticalModule(
+        layers=(
+            PhaseMask(phase_map_rad=0.0),
+            FourierTransform(),
+            KSpacePhaseMask(phase_map_rad=0.0),
+            InverseFourierTransform(),
+        )
+    )
+    out = module_ok.forward(field)
+    assert out.domain == "spatial"

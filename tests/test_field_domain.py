@@ -4,7 +4,9 @@ import numpy as np
 from fouriax.optics import (
     ASMPropagator,
     Field,
+    FourierTransform,
     Grid,
+    InverseFourierTransform,
     KSpacePhaseMask,
     KSpacePropagator,
     PhaseMask,
@@ -37,25 +39,39 @@ def test_field_to_kspace_is_idempotent_and_preserves_sampling_metadata():
     assert again.kspace_pixel_size_cyc_per_um == grid.kspace_pixel_size_cyc_per_um()
 
 
-def test_spatial_layer_auto_converts_kspace_input():
+def test_spatial_layer_requires_spatial_input():
     grid = Grid.from_extent(nx=10, ny=10, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     field_k = Field.plane_wave(grid=grid, spectrum=spectrum).to_kspace()
 
-    out = PhaseMask(phase_map_rad=0.1).forward(field_k)
+    with np.testing.assert_raises(ValueError):
+        PhaseMask(phase_map_rad=0.1).forward(field_k)
+
+    out = PhaseMask(phase_map_rad=0.1).forward(InverseFourierTransform().forward(field_k))
     assert out.domain == "spatial"
 
 
-def test_k_layer_and_k_propagator_auto_convert_spatial_input():
+def test_k_layers_require_kspace_input():
     grid = Grid.from_extent(nx=10, ny=10, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
 
-    out_k = KSpacePhaseMask(phase_map_rad=0.2).forward(field)
+    with np.testing.assert_raises(ValueError):
+        KSpacePhaseMask(phase_map_rad=0.2).forward(field)
+    with np.testing.assert_raises(ValueError):
+        KSpacePropagator(refractive_index=1.0, distance_um=5.0).forward(field)
+
+    field_k = FourierTransform().forward(field)
+    out_k = KSpacePhaseMask(phase_map_rad=0.2).forward(field_k)
     assert out_k.domain == "kspace"
 
-    out_prop = KSpacePropagator(refractive_index=1.0, distance_um=5.0).forward(field)
+    out_prop = KSpacePropagator(refractive_index=1.0, distance_um=5.0).forward(field_k)
     assert out_prop.domain == "kspace"
 
-    out_asm = ASMPropagator(use_sampling_planner=False, distance_um=5.0).forward(out_k)
+    with np.testing.assert_raises(ValueError):
+        ASMPropagator(use_sampling_planner=False, distance_um=5.0).forward(out_k)
+
+    out_asm = ASMPropagator(use_sampling_planner=False, distance_um=5.0).forward(
+        InverseFourierTransform().forward(out_k)
+    )
     assert out_asm.domain == "spatial"

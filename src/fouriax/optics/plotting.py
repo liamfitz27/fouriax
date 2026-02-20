@@ -6,6 +6,7 @@ import numpy as np
 
 from fouriax.optics.layers import OpticalModule
 from fouriax.optics.model import Field
+from fouriax.optics.na_planning import propagation_layer_view
 
 
 def _field_map(field: Field, mode: str, wavelength_idx: int, log_scale: bool) -> np.ndarray:
@@ -99,11 +100,11 @@ def plot_field_evolution(
     output = field_in
     prop_idx = 0
     pending_phase: np.ndarray | None = None
-    for layer in module.planned_layers(field_in):
+    for layer in module.layers:
         output = layer.forward(output)
         if hasattr(layer, "phase_map_rad"):
             pending_phase = _phase_mask_image(layer, wavelength_idx=wavelength_idx)
-        if OpticalModule._propagation_layer_view(layer) is not None:
+        if propagation_layer_view(layer) is not None:
             prop_idx += 1
             items.append(
                 (

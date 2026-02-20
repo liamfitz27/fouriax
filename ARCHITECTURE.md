@@ -1,102 +1,235 @@
-# Fouriax Architecture Overview
+# Fouriax Architecture
 
-This document provides a comprehensive overview of the `fouriax` differentiable free-space optics library. It covers the core abstractions, the layer hierarchy, propagation models, sensor interfaces, and explains how the three major regimes (coherent imaging, incoherent imaging, and k-space operators) are unified under a common computational framework.
+This document describes the current implementation of `fouriax` in `src/fouriax/optics`.
 
-## 1. Core Data Models (`optics/model.py`)
+## Scope
 
-The foundational data structure passed between optical layers is the `Field`.
+The optics package is organized around:
 
-- **`Grid`**: Represents a 2D uniform spatial grid.
-  - Attributes: `nx`, `ny`, `dx_um`, `dy_um`.
-  - Methods: `frequency_grid()`, `spatial_grid()`, `kspace_pixel_size_cyc_per_um()`.
-- **`Spectrum`**: Represents a collection of processing wavelengths.
-  - Attributes: `wavelengths_um` (1D array).
-- **`Field`**: A complex optical field defined over a `Grid` and `Spectrum`.
-  - Shape: `(num_wavelengths, ny, nx)`.
-  - Attributes: `data`, `grid`, `spectrum`, `domain` (either `"spatial"` or `"kspace"`).
-  - Methods: `intensity()`, `phase()`, `power()`, `normalize_power()`, `apply_phase()`, `apply_amplitude()`.
-  - Domain Operations: `to_kspace()`, `to_spatial()` seamlessly handle FFT/IFFT calls and metadata alignment.
+- `Field` state representation (`model.py`)
+- composable `OpticalLayer` transforms (`interfaces.py`, `layers.py`, `propagation.py`)
+- readout `Sensor`s (`sensors.py`)
+- objective and matrix-analysis utilities (`losses.py`)
 
-## 2. Interface Hierarchy (`optics/interfaces.py`)
+All physical transforms are implemented as explicit layers. Domain transitions between spatial and k-space are explicit in layer stacks.
 
-The library leverages simple Abstract Base Classes to define composable optical transformations. All components are natively compatible with JAX transformations (like `vmap`, `grad`, and `jit`).
+## Core Data Model
 
-- **`OpticalLayer`**: The base class for all operators, including components and propagation models.
-  - `forward(field: Field) -> Field`
-  - `validate_for(field: Field)`
-  - `parameters() -> dict[str, jnp.ndarray]`
-- **`Sensor`**: Computes measured readouts from complex fields.
-  - `measure(field: Field) -> jnp.ndarray`
+### `Grid`
 
-## 3. Optical Layers (`optics/layers.py`)
+`Grid` defines a 2D Cartesian sampling lattice in micrometers:
 
-Layers implement the `OpticalLayer` interface and perform specific physical operations. They can be freely combined.
+- `nx`, `ny`
+- `dx_um`, `dy_um`
 
-### Spatial Modulation Layers (Coherent)
-- **`PhaseMask`**: Applies a configurable 2D phase modulation array (`jnp.exp(1j * phase)`).
-- **`AmplitudeMask`**: Applies a configurable 2D amplitude modulation array.
-- **`ComplexMask`**: Combines both amplitude and phase modulation.
-- **`ThinLens`**: An ideal quadratic phase mask representing a lens of `focal_length_um`, with an optional `aperture_diameter_um`.
+Key methods:
 
-### K-Space Layers
-- **`KSpacePhaseMask`, `KSpaceAmplitudeMask`, `KSpaceComplexMask`**: These layers enforce execution strictly in the `"kspace"` domain. They are useful for spatial frequency filtering (e.g., surrogate 4f systems).
+- `spatial_grid()`: centered `(x, y)` grids
+- `frequency_grid()`: `(fx, fy)` grids in cycles/um
+- `kspace_pixel_size_cyc_per_um()`
 
-### Incoherent Layers
-- **`IncoherentImager`**: Converts a coherent optical subsystem into an incoherent, shift-invariant imager.
-  - It works by automatically probing a defined coherent subsystem (an `OpticalLayer` serving as a propagator) with an impulse (or plane wave focus) to extract a coherent Point Spread Function (PSF).
-  - It then computes an incoherent response via spatial convolution (`mode="psf"`) or frequency-domain filtering (`mode="otf"`) applied to the *intensity* (rather than complex amplitude) of the incoming field.
+### `Spectrum`
 
-### System Composition
-- **`OpticalModule`**: The primary sequence orchestrator. It holds an ordered sequence of `layers` and an optional `sensor`. 
-  - Resolves domain transitions (automatically tracks when a layer forces `"spatial"` vs `"kspace"` representation and invokes transforms seamlessly).
-  - Recursively collects cascaded aperture stops across the system (`effective_na()`) and automatically injects safe Numerical Aperture bounds (`na_schedule()`) to prevent high numerical frequency aliasing inside propagators.
-  - Exposes `forward()`, `measure()`, `trace()` (for returning intermediate fields) and `parameters()`.
+`Spectrum` stores wavelengths as a 1D array in micrometers:
 
-## 4. Propagation Models (`optics/propagation.py`)
+- `wavelengths_um`
+- `size`
 
-Free-space optical propagation requires solving the wave equation. Rather than forcing the user to pick equations blindly, Fouriax implements multiple FFT-based regimes:
+### `Field`
 
-- **`RSPropagator`**: Employs spatial convolution with a Rayleigh-Sommerfeld spherical impulse response. Ideal for near-field regimes.
-- **`ASMPropagator`**: Employs the Angular Spectrum Method (multiplying by an exact phase transfer function directly in frequency space). Ideal for accurate paraxial to far-field propagation.
-- **`KSpacePropagator`**: Applies a direct phase advance on a field natively inside the `kspace` domain.
-- **`AutoPropagator` / `CoherentPropagator`**: Intelligent meta-propagators that dynamically select between the exact RS, ASM, or K-Space methods based on simulation inputs (`distance_um`, wavelength, and `z_crit`).
+`Field` is the tensor passed between layers:
 
-## 5. Sensors (`optics/sensors.py`)
+- `data`: complex array shaped `(num_wavelengths, ny, nx)`
+- `grid`: `Grid`
+- `spectrum`: `Spectrum`
+- `domain`: `"spatial"` or `"kspace"`
+- k-space pixel metadata
 
-Transforming infinite precision physics to a real-world digital signal is done at sensor edges.
+Operations:
 
-- **`IntensitySensor`**: Computes the squared magnitude of the field (intensity). Can optionally integrate power over specific `detector_masks` regions (such as binning photons in optical neural networks).
-- **`FieldReadout`**: Exposes raw underlying complex layers via configurable representations (`complex`, `real_imag`, `amplitude_phase`) for mathematical analysis rather than physical detection.
+- `intensity()`, `phase()`, `power()`, `normalize_power()`
+- `apply_phase()`, `apply_amplitude()`
+- `to_kspace()`, `to_spatial()` for explicit FFT/IFFT conversion
 
----
+## Interfaces
 
-## Integrating Under a Common Framework
+### `OpticalLayer`
 
-The central challenge in modeling differentiable optics is harmonizing differing physical behaviors—coherent complex wavefronts, incoherent intensities, and frequency-domain masking—into a singular autodiff pipeline. Fouriax achieves this seamlessly because the components speak a unified language via `Field` and `OpticalModule`.
+Abstract base class for field-to-field transforms:
 
-### 1. The `Field` as the Common Currency
-Everything passed forward or backwards through the system is an instance of `Field`. 
-- By explicitly tracking the `domain` (`"spatial"` vs `"kspace"`), the framework delays executing explicit Fast Fourier Transforms until strictly necessary. 
-- By tracking `spectrum`, every layer natively broadcasts JAX operations across multi-band wavelengths automatically (hyperspectral imaging).
+- `forward(field) -> Field`
+- `validate_for(field)`
+- `parameters() -> dict[str, jnp.ndarray]`
 
-### 2. Bridging Coherent and K-Space Operations
-In physical optics (such as a 4f correlator system), a spatial component acts as a physical analog Fourier transform. You have a lens, then an aperture, then another lens. 
-- **The Structural Approach (Coherent):** `[ThinLens, CoherentPropagator, AmplitudeMask, CoherentPropagator, ThinLens]`.
-- **The Idealized Surrogate Approach (K-Space):** Alternatively, you can drop physical lenses entirely and use `KSpaceAmplitudeMask` directly. 
+### `Sensor`
 
-`OpticalModule` reconciles these approaches automatically. When the stack encounters a `KSpace` layer, it ensures `Field.to_kspace()` runs (performing one global FFT), applies the surrogate element-wise in frequency blocks, and leaves the sequence in `"kspace"`. It only transitions back (`Field.to_spatial()`) when the next physical lens explicitly demands it, guaranteeing minimal FFT execution.
+Abstract base class for measurement readout:
 
-### 3. Bridging Coherent and Incoherent Operations
-Coherent imaging processes Electric fields ($E_{out} \approx E * h$); Incoherent imaging deals purely in scattered intensities ($I_{out} \approx I * |h|^2$). Typically, simulation tools build two entirely discrete codebases.
+- `measure(field) -> jnp.ndarray`
+- `validate_for(field)`
 
-In `fouriax`, this gap is cleanly bridged using the `IncoherentImager` layer.
-- `IncoherentImager` takes your existing coherent layout elements and analytically computes its continuous PSF. 
-- Because it honors the exact same `OpticalLayer` base class (accepting a `Field` input and returning a non-negative derived pseudo-`Field` amplitude back out), it drops immediately into existing `OpticalModule` pipelines alongside normal phase masks or propagators. 
+## Layer System
 
-### Summary: Execution Inside `OpticalModule`
-Whenever a user calls `module.forward(field)` or `module.measure(field)`, the framework undergoes structural compilation:
-1. NA limits are gathered system-wide from objects like `ThinLens` and passed to bounded segments.
-2. `AutoPropagators` compile to static `RS` or `ASM` kernels depending on `z_crit` limits.
-3. As the simulated pipeline traverses layer $N$, if layer $N$ requires `kspace` but previous output was `spatial`, a single batched `jnp.fft.fftn` is injected.
-4. Intermediate states are resolved dynamically without compromising gradient backpropagation (using standard `jax.grad`).
-5. A batched `Sensor` flattens the terminating complex arrays to physical measurements.
+### `OpticalModule`
+
+`OpticalModule` composes an ordered `tuple[OpticalLayer, ...]` with optional `sensor`.
+
+Execution methods:
+
+- `forward(field) -> Field`
+- `measure(field) -> jnp.ndarray`
+- `trace(field, include_input=True) -> list[Field]`
+- `parameters()`
+
+`OpticalModule` is a thin sequential executor. It does not perform NA planning, domain inference, or propagation-method resolution.
+
+### NA Planning (`na_planning.py`)
+
+Numerical aperture (NA) geometry logic is implemented in `optics/na_planning.py` as external planning utilities:
+
+- `propagation_layer_view(...)`
+- `collect_stops(...)`
+- `collect_propagation_segments(...)`
+- `local_na_for_segment(...)`
+- `effective_na(...)`
+- `na_schedule(...)`
+- `layer_with_na_if_supported(...)`
+- `apply_na_limits(...)`
+
+Typical use:
+
+1. Build a schedule with `na_schedule(layers, field, ...)`.
+2. Produce modified layers via `apply_na_limits(layers, schedule)`.
+3. Construct `OpticalModule(layers=...)` with the resulting stack.
+
+### Domain-Explicit Transform Layers
+
+`layers.py` includes explicit domain conversion layers:
+
+- `FourierTransform`: spatial -> k-space
+- `InverseFourierTransform`: k-space -> spatial
+
+Domain-specific layers validate input domain and raise if incorrect.
+
+### Spatial-Domain Modulation Layers
+
+- `PhaseMask`
+- `AmplitudeMask`
+- `ComplexMask`
+- `ThinLens`
+
+These require `field.domain == "spatial"`.
+
+### K-Space Modulation Layers
+
+- `KSpacePhaseMask`
+- `KSpaceAmplitudeMask`
+- `KSpaceComplexMask`
+
+These require `field.domain == "kspace"`.
+
+### `IncoherentImager`
+
+`IncoherentImager` models shift-invariant incoherent imaging by:
+
+1. generating a coherent calibration source (`impulse` or `plane_wave_focus`)
+2. propagating through `optical_layer` and `propagator`
+3. constructing PSF from output intensity
+4. applying PSF/OTF filtering to input intensity
+
+Modes:
+
+- `mode="psf"`, `mode="otf"`, or `mode="auto"`
+
+Normalization controls:
+
+- `normalization_reference`: `"near_1um"`, `"near_wavelength"`, `"at_imaging_distance"`
+- optional explicit `normalization_reference_distance_um`
+
+## Propagation Architecture
+
+Implemented in `propagation.py`.
+
+### Concrete Propagators
+
+- `RSPropagator`
+  - spatial-domain input
+  - convolution with Rayleigh-Sommerfeld delta response
+  - optional NA mask
+  - optional sampling planner / precomputed grid
+
+- `ASMPropagator`
+  - spatial-domain input
+  - explicitly composes:
+    - `FourierTransform`
+    - `KSpacePropagator(include_evanescent=True)`
+    - `InverseFourierTransform`
+  - optional sampling planner / precomputed grid
+  - optional NA mask
+
+- `KSpacePropagator`
+  - k-space input
+  - diagonal transfer-function multiplication
+  - `include_evanescent` controls whether evanescent terms are retained
+
+### Propagator Planning
+
+`plan_propagation(...)` is the propagation selector function.
+
+Inputs include:
+
+- `mode`: `"auto" | "asm" | "rs" | "kspace"`
+- `grid`, `spectrum`, `distance_um`
+- `input_domain`
+- planner and NA parameters
+
+Output:
+
+- one concrete layer instance: `ASMPropagator | RSPropagator | KSpacePropagator`
+
+In `mode="auto"`:
+
+- k-space input selects `KSpacePropagator`
+- spatial input selects ASM or RS using `select_propagator_method(...)`
+
+Supporting utilities:
+
+- `critical_distance_um(...)`
+- `select_propagator_method(...)`
+- `recommend_nyquist_grid(...)`
+
+## Sensors
+
+Implemented in `sensors.py`.
+
+- `IntensitySensor`
+  - computes intensity, optional wavelength sum
+  - optional detector integration via `detector_masks`
+
+- `FieldReadout`
+  - returns `"complex"`, `"real_imag"`, or `"amplitude_phase"` representations
+
+Current sensor behavior converts inputs to spatial domain internally (`field.to_spatial()`).
+
+## Losses and Matrix Utilities
+
+Implemented in `losses.py`:
+
+- `focal_spot_loss`
+- DCT synthesis matrix helpers
+- sensing matrix construction
+- randomized SVD
+- coherence objectives
+- mutual-information objective
+
+## Execution Pattern
+
+Typical coherent stack with explicit domain transitions:
+
+1. spatial layers (e.g., lens/masks)
+2. `FourierTransform` when entering k-space operations
+3. k-space layers (e.g., k-space masks/propagator)
+4. `InverseFourierTransform` when returning to spatial domain
+5. optional sensor readout
+
+Propagation selection is explicit at construction/planning time through `plan_propagation(...)`, producing a concrete `OpticalLayer` used directly in `OpticalModule.layers`.

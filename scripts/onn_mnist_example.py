@@ -16,14 +16,16 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
-    CoherentPropagator,
     Field,
     Grid,
     IntensitySensor,
+    OpticalLayer,
     OpticalModule,
     PhaseMask,
     Spectrum,
+    plan_propagation,
     plot_field_evolution,
+    recommend_nyquist_grid,
 )
 
 MNIST_URL = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"
@@ -75,7 +77,7 @@ def resize_images_to_grid(images: np.ndarray, grid: Grid) -> np.ndarray:
 def build_onn_module(
     params_mask: jnp.ndarray,
     work_grid: Grid,
-    propagator: CoherentPropagator,
+    propagator: OpticalLayer,
     detector_sensor: IntensitySensor,
 ) -> OpticalModule:
     layers = []
@@ -121,17 +123,21 @@ def main(argv: Sequence[str] | None = None) -> None:
     with jax.default_device(selected_device):
         input_grid = Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
         spectrum = Spectrum.from_scalar(1.55)
-        propagator = CoherentPropagator(
+        work_grid = recommend_nyquist_grid(
+            grid=input_grid,
+            spectrum=spectrum,
+            nyquist_factor=nyquist_factor,
+            min_padding_factor=2.0,
+        )
+        propagator = plan_propagation(
             mode="auto",
-            setup_grid=input_grid,
-            setup_spectrum=spectrum,
-            setup_distance_um=distance_um,
+            grid=work_grid,
+            spectrum=spectrum,
             distance_um=distance_um,
+            precomputed_grid=work_grid,
+            use_sampling_planner=False,
             nyquist_factor=nyquist_factor,
         )
-        if propagator.resolved_precomputed_grid is None:
-            raise RuntimeError("CoherentPropagator(mode='auto') did not build a precomputed grid")
-        work_grid = propagator.resolved_precomputed_grid
         mask_nx = work_grid.nx // phase_mask_downsample
         mask_ny = work_grid.ny // phase_mask_downsample
         mask_grid = Grid.from_extent(
