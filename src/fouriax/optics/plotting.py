@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from fouriax.optics.layers import PropagationLayer
+from fouriax.optics.layers import Propagation
 from fouriax.optics.model import Field
 
 if TYPE_CHECKING:
@@ -106,7 +106,7 @@ def plot_field_evolution(
         output = layer.forward(output)
         if hasattr(layer, "phase_map_rad"):
             pending_phase = _phase_mask_image(layer, wavelength_idx=wavelength_idx)
-        if isinstance(layer, PropagationLayer):
+        if isinstance(layer, Propagation):
             prop_idx += 1
             items.append(
                 (

@@ -2,13 +2,13 @@ import jax
 import jax.numpy as jnp
 
 from fouriax.optics import (
-    AmplitudeMaskLayer,
+    AmplitudeMask,
     AutoPropagator,
     Field,
     Grid,
     OpticalModule,
-    PhaseMaskLayer,
-    PropagationLayer,
+    PhaseMask,
+    Propagation,
     Spectrum,
     focal_spot_loss,
 )
@@ -39,9 +39,9 @@ def test_focal_spot_loss_decreases_over_short_optimization():
     def make_module(phase_2d: jnp.ndarray) -> OpticalModule:
         return OpticalModule(
             layers=(
-                PhaseMaskLayer(phase_map_rad=phase_2d[None, :, :]),
-                AmplitudeMaskLayer(amplitude_map=aperture[None, :, :]),
-                PropagationLayer(model=propagator, distance_um=distance_um),
+                PhaseMask(phase_map_rad=phase_2d[None, :, :]),
+                AmplitudeMask(amplitude_map=aperture[None, :, :]),
+                Propagation(model=propagator, distance_um=distance_um),
             )
         )
 

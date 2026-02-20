@@ -1,6 +1,7 @@
 # Planned Additions
 
 ## Scope
+
 This document defines the next feature track after current NA/hybrid-domain stabilization:
 
 1. Polarization support with Jones vectors and Jones-matrix layers.
@@ -11,6 +12,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
 4. Coherence-aware imaging mode using shift-invariant PSF/OTF models.
 
 ## Goals
+
 - Keep the current scalar-path API working unchanged.
 - Add polarization as an explicit opt-in mode.
 - Preserve differentiability and JAX tracing safety.
@@ -19,6 +21,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
 ## Phase 1: Polarization / Jones Support
 
 ### Data Model
+
 - Extend `Field` to support polarized representation:
   - scalar mode: existing shape `(wavelength, ny, nx)`
   - Jones mode: complex shape `(wavelength, 2, ny, nx)` where axis 1 is `(Ex, Ey)`
@@ -27,6 +30,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - `Field.plane_wave_jones(..., ex: complex | array, ey: complex | array)`
 
 ### Layer Contracts
+
 - Scalar-only layers:
   - continue to work for scalar mode.
   - for Jones mode, either:
@@ -40,12 +44,14 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - future extension: birefringent/an-isotropic propagation operators.
 
 ### Sensors and Readout
+
 - `IntensitySensor` in Jones mode defaults to total intensity:
   - `|Ex|^2 + |Ey|^2`
 - Add optional channel-resolved output:
   - per-channel intensity map for diagnostics/training losses.
 
 ### Tests (Phase 1)
+
 - shape/validation tests for scalar and Jones modes.
 - Jones matrix identity/regression tests.
 - gradient tests through mixed scalar + Jones-compatible stacks.
@@ -54,10 +60,12 @@ This document defines the next feature track after current NA/hybrid-domain stab
 ## Phase 2: Rectangular-Pillar Meta-Atom Library from Square LUT
 
 ### Source Data
+
 - Reuse existing square-pillar LUT:
   - side length `s` -> complex transmission `t(s, wavelength)`.
 
 ### First Model (Diagonal Jones Approximation)
+
 - Build rectangular parameterization `(sx, sy)` from square LUT lookup:
   - `Jxx = t(sx, wavelength)`
   - `Jyy = t(sy, wavelength)`
@@ -66,12 +74,14 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - `J = [[Jxx, 0], [0, Jyy]]`
 
 ### API Additions
+
 - `RectangularMetaAtomLibrary.from_square_library(square_library)`
 - `RectangularMetaAtomInterpolationLayer` with geometry params `(sx_map, sy_map)`.
 - Backward-compatible scalar projection helper:
   - optional equivalent scalar transmission for legacy scripts.
 
 ### Tests (Phase 2)
+
 - interpolation consistency:
   - `sx == sy` recovers square-library scalar behavior.
 - bounded-parameter checks and gradients w.r.t. both `sx` and `sy`.
@@ -80,6 +90,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
 ## Phase 3: Holography Examples
 
 ### Example A: Unpolarized Holography
+
 - Script target: `scripts/holography_unpolarized_example.py`
 - Objective:
   - optimize phase (and optional amplitude) to reconstruct one target pattern.
@@ -89,6 +100,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - image MSE + optional regularizers (TV/smoothness/power normalization).
 
 ### Example B: Polarized Dual-Pattern Holography
+
 - Script target: `scripts/holography_polarized_dual_example.py`
 - Objective:
   - one device creates pattern A for x-polarized input and pattern B for y-polarized input.
@@ -97,6 +109,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - weighted sum: `L = Lx(pattern A) + Ly(pattern B)` + regularizers.
 
 ### Example Outputs
+
 - save artifacts:
   - optimized parameters
   - reconstructed images per polarization
@@ -106,11 +119,13 @@ This document defines the next feature track after current NA/hybrid-domain stab
 ## Phase 4: Coherence-Aware Imaging (Shift-Invariant PSF/OTF)
 
 ### Motivation
+
 - Current stack is coherent field propagation with intensity readout.
 - Add a planned imaging mode for incoherent or partially coherent approximations
   via shift-invariant convolution operators.
 
 ### Scope (First Release)
+
 - In scope:
   - real-space imaging path with shift-invariant PSF convolution.
   - equivalent OTF implementation in Fourier domain for efficiency.
@@ -122,6 +137,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - dedicated k-space-domain layer stack for incoherent transport.
 
 ### API Direction
+
 - New imaging operator/layer family:
   - `IncoherentImagingLayer(psf=..., normalize=True)` for direct convolution.
   - `OTFImagingLayer(otf=...)` for FFT-domain implementation.
@@ -132,6 +148,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - this mode acts on intensity-domain imaging semantics, not coherent phase transport.
 
 ### k-Space Support Decision
+
 - Decision: defer dedicated incoherent k-space pipeline in phase 4.
 - Rationale:
   - OTF implementation already uses FFT internally for speed.
@@ -140,19 +157,15 @@ This document defines the next feature track after current NA/hybrid-domain stab
   - expose standalone k-space-oriented API only if a clear use case emerges.
 
 ### Tests (Phase 4)
+
 - PSF/OTF numerical equivalence tests.
 - delta-input response test (`input=impulse` reproduces PSF).
 - non-negativity and energy/normalization checks.
 - gradient tests through PSF/OTF parameters and upstream phase masks.
 - regression tests vs analytic diffraction-limited incoherent benchmarks where available.
 
-## Implementation Order
-1. Phase 1 data model + minimal Jones layers + tests.
-2. Phase 2 rectangular meta-atom library + interpolation layer + tests.
-3. Phase 3 two holography scripts and artifact/report generation.
-4. Phase 4 coherence-aware imaging operators (real-space scope first).
-
 ## Risks and Constraints
+
 - Memory/runtime increase from extra polarization axis.
 - Need strict shape validation to avoid silent channel misuse.
 - Phase-2 diagonal Jones approximation ignores coupling terms (`Jxy`, `Jyx`).
@@ -161,6 +174,7 @@ This document defines the next feature track after current NA/hybrid-domain stab
 - PSF boundary conditions and padding choices can bias optimization if not standardized.
 
 ## Done Criteria
+
 - Jones path is fully differentiable and covered by tests.
 - Rectangular library behaves consistently and is documented in code/docstrings.
 - Both holography examples run in `.venv` and generate reproducible artifacts.

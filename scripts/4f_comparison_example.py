@@ -9,15 +9,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from fouriax.optics import (
-    AmplitudeMaskLayer,
+    AmplitudeMask,
+    CoherentPropagator,
     Field,
     Grid,
     IntensitySensor,
-    KAmplitudeMaskLayer,
+    KSpaceAmplitudeMask,
     OpticalModule,
-    Propagator,
     Spectrum,
-    ThinLensLayer,
+    ThinLens,
 )
 
 ARTIFACTS_DIR = Path("artifacts")
@@ -123,14 +123,14 @@ def main() -> None:
     input_aperture = _spatial_circular_aperture(grid, LENS_APERTURE_UM)
 
     # (1) Physical 4f path.
-    propagator_4f = Propagator(mode="auto", distance_um=f_um)
+    propagator_4f = CoherentPropagator(mode="auto", distance_um=f_um)
     module_4f = OpticalModule(
         layers=(
-            ThinLensLayer(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
+            ThinLens(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
             propagator_4f,
-            AmplitudeMaskLayer(amplitude_map=spatial_fourier_stop),
+            AmplitudeMask(amplitude_map=spatial_fourier_stop),
             propagator_4f,
-            ThinLensLayer(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
+            ThinLens(focal_length_um=f_um, aperture_diameter_um=LENS_APERTURE_UM),
         ),
         sensor=IntensitySensor(sum_wavelengths=True),
         auto_apply_na=True,
@@ -141,8 +141,8 @@ def main() -> None:
     # (2) k-space surrogate.
     module_k = OpticalModule(
         layers=(
-            AmplitudeMaskLayer(amplitude_map=input_aperture),
-            KAmplitudeMaskLayer(amplitude_map=k_stop, aperture_diameter_um=2.0 * f_um * NA_STOP),
+            AmplitudeMask(amplitude_map=input_aperture),
+            KSpaceAmplitudeMask(amplitude_map=k_stop, aperture_diameter_um=2.0 * f_um * NA_STOP),
         ),
         sensor=IntensitySensor(sum_wavelengths=True),
         # No propagation segments in this surrogate stack; NA is explicit in k_stop.
@@ -163,7 +163,7 @@ def main() -> None:
     out_k = np.asarray(module_k.measure(field_in))
 
     print("=== 4f Comparison ===")
-    print(f"Propagator(mode='auto') precomputed_method={propagator_4f.precomputed_method}")
+    print(f"CoherentPropagator(mode='auto') precomputed_method={propagator_4f.precomputed_method}")
     print(f"f_um={f_um:.6f}, NA={NA_STOP:.4f}, lens_aperture_um={LENS_APERTURE_UM:.1f}")
     print(
         "MSE: "

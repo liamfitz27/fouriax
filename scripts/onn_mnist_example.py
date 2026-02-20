@@ -16,12 +16,12 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
+    CoherentPropagator,
     Field,
     Grid,
     IntensitySensor,
     OpticalModule,
-    PhaseMaskLayer,
-    Propagator,
+    PhaseMask,
     Spectrum,
     plot_field_evolution,
 )
@@ -75,7 +75,7 @@ def resize_images_to_grid(images: np.ndarray, grid: Grid) -> np.ndarray:
 def build_onn_module(
     params_mask: jnp.ndarray,
     work_grid: Grid,
-    propagator: Propagator,
+    propagator: CoherentPropagator,
     detector_sensor: IntensitySensor,
 ) -> OpticalModule:
     layers = []
@@ -86,7 +86,7 @@ def build_onn_module(
             method="linear",
         )
         bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
-        layers.append(PhaseMaskLayer(phase_map_rad=bounded_phase))
+        layers.append(PhaseMask(phase_map_rad=bounded_phase))
         layers.append(propagator)
     module = OpticalModule(layers=tuple(layers), sensor=detector_sensor)
     return module
@@ -121,7 +121,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     with jax.default_device(selected_device):
         input_grid = Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
         spectrum = Spectrum.from_scalar(1.55)
-        propagator = Propagator(
+        propagator = CoherentPropagator(
             mode="auto",
             setup_grid=input_grid,
             setup_spectrum=spectrum,
@@ -130,7 +130,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             nyquist_factor=nyquist_factor,
         )
         if propagator.resolved_precomputed_grid is None:
-            raise RuntimeError("Propagator(mode='auto') did not build a precomputed grid")
+            raise RuntimeError("CoherentPropagator(mode='auto') did not build a precomputed grid")
         work_grid = propagator.resolved_precomputed_grid
         mask_nx = work_grid.nx // phase_mask_downsample
         mask_ny = work_grid.ny // phase_mask_downsample

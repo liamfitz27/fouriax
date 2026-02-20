@@ -184,7 +184,7 @@ def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
 @dataclass(frozen=True)
 class RSPropagator(PropagationModel):
     """
-    Rayleigh-Sommerfeld propagator based on convolution with the RS impulse response.
+    Rayleigh-Sommerfeld propagator based on convolution with the RS delta response.
 
     All length quantities use micrometers (um).
     """
@@ -198,7 +198,7 @@ class RSPropagator(PropagationModel):
     medium_index: float = 1.0
     na_limit: float | None = None
 
-    def impulse_response(
+    def delta_response(
         self,
         field: Field,
         wavelength_um: float,
@@ -257,7 +257,7 @@ class RSPropagator(PropagationModel):
         area_um2 = work_field.grid.dx_um * work_field.grid.dy_um
         outputs = []
         for i, wavelength_um in enumerate(work_field.spectrum.wavelengths_um):
-            kernel = self.impulse_response(work_field, wavelength_um, distance_um)
+            kernel = self.delta_response(work_field, wavelength_um, distance_um)
             propagated = fftconvolve(
                 work_field.data[i],
                 kernel,
@@ -462,7 +462,7 @@ class KSpacePropagator(PropagationModel):
 @dataclass(frozen=True)
 class AutoPropagator(PropagationModel):
     """
-    Propagator wrapper that auto-selects ASM, RS, or k-space propagation.
+    CoherentPropagator wrapper that auto-selects ASM, RS, or k-space propagation.
     """
 
     asm: ASMPropagator = field(default_factory=ASMPropagator)
@@ -605,7 +605,7 @@ class AutoPropagator(PropagationModel):
 
 
 @dataclass(frozen=True)
-class Propagator(PropagationModel):
+class CoherentPropagator(PropagationModel):
     """
     Public facade over ASM/RS/k-space/auto propagators.
 
@@ -635,6 +635,7 @@ class Propagator(PropagationModel):
     _resolved_precomputed_method: Literal["asm", "rs", "kspace"] | None = field(
         default=None, init=False, repr=False
     )
+    _resolved_auto_model: AutoPropagator | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.mode not in ("auto", "asm", "rs", "kspace"):
@@ -652,9 +653,11 @@ class Propagator(PropagationModel):
             auto = self._auto_model()
             object.__setattr__(self, "_resolved_precomputed_grid", auto.precomputed_grid)
             object.__setattr__(self, "_resolved_precomputed_method", auto.precomputed_method)
+            object.__setattr__(self, "_resolved_auto_model", auto)
             return
         object.__setattr__(self, "_resolved_precomputed_grid", self.precomputed_grid)
         object.__setattr__(self, "_resolved_precomputed_method", self.mode)
+        object.__setattr__(self, "_resolved_auto_model", None)
 
     @property
     def precomputed_method(self) -> Literal["asm", "rs", "kspace"] | None:
@@ -714,7 +717,7 @@ class Propagator(PropagationModel):
         resolved = self.distance_um if distance_um is None else distance_um
         if resolved is None:
             raise ValueError(
-                "distance_um must be provided either on Propagator or at propagate() call"
+                "distance_um must be provided either on CoherentPropagator or at propagate() call"
             )
         if resolved <= 0:
             raise ValueError("distance_um must be strictly positive")
@@ -724,7 +727,10 @@ class Propagator(PropagationModel):
         self.validate_for(field)
         resolved_distance = self._effective_distance(distance_um)
         if self.mode == "auto":
-            return self._auto_model().propagate(field, distance_um=resolved_distance)
+            auto = self._resolved_auto_model
+            if auto is None:
+                raise RuntimeError("auto model was not initialized")
+            return auto.propagate(field, distance_um=resolved_distance)
         if self.mode == "asm":
             return self._asm_model().propagate(field, distance_um=resolved_distance)
         if self.mode == "rs":

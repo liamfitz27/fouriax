@@ -10,17 +10,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from fouriax.optics import (
-    AmplitudeMaskLayer,
+    AmplitudeMask,
     ASMPropagator,
     Field,
     Grid,
     IntensitySensor,
-    KAmplitudeMaskLayer,
+    KSpaceAmplitudeMask,
     OpticalModule,
-    PhaseMaskLayer,
-    PropagationLayer,
+    PhaseMask,
+    Propagation,
     Spectrum,
-    ThinLensLayer,
+    ThinLens,
 )
 
 ARTIFACTS_DIR = Path("artifacts")
@@ -154,11 +154,11 @@ def main() -> None:
             asm_4f = ASMPropagator(use_sampling_planner=True, medium_index=N_MEDIUM, na_limit=None)
             module_4f = OpticalModule(
                 layers=(
-                    ThinLensLayer(focal_length_um=f_um, aperture_diameter_um=aperture),
-                    PropagationLayer(model=asm_4f, distance_um=f_um),
-                    AmplitudeMaskLayer(amplitude_map=spatial_fourier_stop),
-                    PropagationLayer(model=asm_4f, distance_um=f_um),
-                    ThinLensLayer(focal_length_um=f_um, aperture_diameter_um=aperture),
+                    ThinLens(focal_length_um=f_um, aperture_diameter_um=aperture),
+                    Propagation(model=asm_4f, distance_um=f_um),
+                    AmplitudeMask(amplitude_map=spatial_fourier_stop),
+                    Propagation(model=asm_4f, distance_um=f_um),
+                    ThinLens(focal_length_um=f_um, aperture_diameter_um=aperture),
                 ),
                 sensor=IntensitySensor(sum_wavelengths=True),
                 auto_apply_na=False,
@@ -167,9 +167,9 @@ def main() -> None:
             )
             module_k = OpticalModule(
                 layers=(
-                    AmplitudeMaskLayer(amplitude_map=input_aperture),
-                    KAmplitudeMaskLayer(amplitude_map=k_stop, aperture_diameter_um=2.0 * f_um * na),
-                    PhaseMaskLayer(phase_map_rad=0.0),
+                    AmplitudeMask(amplitude_map=input_aperture),
+                    KSpaceAmplitudeMask(amplitude_map=k_stop, aperture_diameter_um=2.0 * f_um * na),
+                    PhaseMask(phase_map_rad=0.0),
                 ),
                 sensor=IntensitySensor(sum_wavelengths=True),
                 auto_apply_na=False,

@@ -14,7 +14,7 @@ from fouriax.optics import (
     Grid,
     RSPropagator,
     Spectrum,
-    ThinLensLayer,
+    ThinLens,
 )
 from fouriax.optics.propagation import critical_distance_um, select_propagator_method
 
@@ -54,7 +54,7 @@ def run_case(
 ) -> dict[str, float | str | np.ndarray]:
     wavelength_um = float(spectrum.wavelengths_um[0])
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
-    lens = ThinLensLayer(
+    lens = ThinLens(
         focal_length_um=distance_um,
         aperture_diameter_um=aperture_diameter_um,
     )
