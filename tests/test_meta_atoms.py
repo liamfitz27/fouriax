@@ -67,3 +67,27 @@ def test_meta_atom_layer_gradient_tracks_raw_pixel_map():
     assert grads.shape == raw_init.shape
     assert bool(jnp.all(jnp.isfinite(grads)))
     assert float(jnp.sum(jnp.abs(grads))) > 0.0
+
+
+def test_meta_atom_layer_jones_diagonal_uses_separate_parameter_maps():
+    library = _single_param_library()
+    grid = Grid.from_extent(nx=4, ny=3, dx_um=0.7, dy_um=0.7)
+    spectrum = Spectrum.from_scalar(1.0)
+    field = Field.plane_wave_jones(grid=grid, spectrum=spectrum, ex=1.0 + 0.0j, ey=1.0 + 0.0j)
+
+    # Channel X at midpoint -> amp=0.75. Channel Y near upper bound -> amp~0.5.
+    raw_x = jnp.zeros((grid.ny, grid.nx), dtype=jnp.float32)
+    raw_y = 10.0 * jnp.ones((grid.ny, grid.nx), dtype=jnp.float32)
+    raw = jnp.stack([raw_x, raw_y], axis=0)
+
+    layer = MetaAtomInterpolationLayer(
+        library=library,
+        raw_geometry_params=raw,
+        min_geometry_params=jnp.array([0.10], dtype=jnp.float32),
+        max_geometry_params=jnp.array([0.20], dtype=jnp.float32),
+        polarization_mode="jones_diagonal",
+    )
+    out = layer.forward(field)
+    comp = np.asarray(out.component_intensity()[0])
+    np.testing.assert_allclose(comp[0], 0.75**2, atol=1e-5)
+    np.testing.assert_allclose(comp[1], 0.5**2, atol=1e-4)

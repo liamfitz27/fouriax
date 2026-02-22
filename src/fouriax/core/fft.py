@@ -70,3 +70,39 @@ def fftconvolve(
     if is_real_output_expected:
         return result.real
     return result
+
+
+@partial(jax.jit, static_argnames=("kernel_shape", "axes"))
+def fftconvolve_same_with_otf(
+    input_tensor,
+    otf_tensor,
+    *,
+    kernel_shape,
+    axes=(-2, -1),
+):
+    """
+    Perform same-mode linear convolution using a precomputed OTF.
+
+    `otf_tensor` is expected to be the FFT of the kernel at full linear-convolution
+    size: `(input_shape + kernel_shape - 1)` over `axes`.
+    """
+    if len(axes) != 2:
+        raise ValueError("fftconvolve_same_with_otf currently requires exactly two axes")
+
+    ay, ax = axes
+    ny = input_tensor.shape[ay]
+    nx = input_tensor.shape[ax]
+    ky, kx = kernel_shape
+    full_shape = (ny + ky - 1, nx + kx - 1)
+    if otf_tensor.shape != full_shape:
+        raise ValueError(f"otf shape mismatch: got {otf_tensor.shape}, expected {full_shape}")
+
+    input_fft = fftn(input_tensor, s=full_shape, axes=axes)
+    conv_full = ifftn(input_fft * otf_tensor, s=full_shape, axes=axes)
+
+    y0 = (ky - 1) // 2
+    x0 = (kx - 1) // 2
+    slices = [slice(None)] * conv_full.ndim
+    slices[ay] = slice(y0, y0 + ny)
+    slices[ax] = slice(x0, x0 + nx)
+    return conv_full[tuple(slices)].real

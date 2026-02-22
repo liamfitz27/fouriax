@@ -8,9 +8,9 @@ import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
 
 from fouriax.core.fft import fftconvolve
-from fouriax.optics.bandlimit import build_na_mask
 from fouriax.optics.interfaces import OpticalLayer
 from fouriax.optics.model import Field, Grid, Spectrum
+from fouriax.optics.na_planning import build_na_mask
 
 
 def _require_domain(
@@ -157,17 +157,37 @@ def _prepare_field_with_grid(field: Field, target_grid: Grid | None) -> Field:
     ):
         return field
 
-    data = jnp.stack(
-        [
-            _resample_2d_to_grid(field.data[i], src_grid=field.grid, dst_grid=target_grid)
-            for i in range(field.spectrum.size)
-        ],
-        axis=0,
-    )
+    if field.is_jones:
+        data = jnp.stack(
+            [
+                jnp.stack(
+                    [
+                        _resample_2d_to_grid(
+                            field.data[i, c],
+                            src_grid=field.grid,
+                            dst_grid=target_grid,
+                        )
+                        for c in range(field.num_polarization_channels)
+                    ],
+                    axis=0,
+                )
+                for i in range(field.spectrum.size)
+            ],
+            axis=0,
+        )
+    else:
+        data = jnp.stack(
+            [
+                _resample_2d_to_grid(field.data[i], src_grid=field.grid, dst_grid=target_grid)
+                for i in range(field.spectrum.size)
+            ],
+            axis=0,
+        )
     return Field(
         data=data,
         grid=target_grid,
         spectrum=field.spectrum,
+        polarization_mode=field.polarization_mode,
         domain=field.domain,
         kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
         ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
@@ -183,17 +203,37 @@ def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
     ):
         return field
 
-    data = jnp.stack(
-        [
-            _resample_2d_to_grid(field.data[i], src_grid=field.grid, dst_grid=original_grid)
-            for i in range(field.spectrum.size)
-        ],
-        axis=0,
-    )
+    if field.is_jones:
+        data = jnp.stack(
+            [
+                jnp.stack(
+                    [
+                        _resample_2d_to_grid(
+                            field.data[i, c],
+                            src_grid=field.grid,
+                            dst_grid=original_grid,
+                        )
+                        for c in range(field.num_polarization_channels)
+                    ],
+                    axis=0,
+                )
+                for i in range(field.spectrum.size)
+            ],
+            axis=0,
+        )
+    else:
+        data = jnp.stack(
+            [
+                _resample_2d_to_grid(field.data[i], src_grid=field.grid, dst_grid=original_grid)
+                for i in range(field.spectrum.size)
+            ],
+            axis=0,
+        )
     return Field(
         data=data,
         grid=original_grid,
         spectrum=field.spectrum,
+        polarization_mode=field.polarization_mode,
         domain=field.domain,
         kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
         ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
@@ -286,12 +326,20 @@ class RSPropagator(OpticalLayer):
         outputs = []
         for i, wavelength_um in enumerate(work_field.spectrum.wavelengths_um):
             kernel = self.delta_response(work_field, wavelength_um, distance_um)
-            propagated = fftconvolve(
-                work_field.data[i],
-                kernel,
-                mode="same",
-                axes=(-2, -1),
-            )
+            if work_field.is_jones:
+                propagated = fftconvolve(
+                    work_field.data[i],
+                    kernel[None, :, :],
+                    mode="same",
+                    axes=(-2, -1),
+                )
+            else:
+                propagated = fftconvolve(
+                    work_field.data[i],
+                    kernel,
+                    mode="same",
+                    axes=(-2, -1),
+                )
             propagated = propagated * area_um2
             if self.na_limit is not None:
                 na_mask = build_na_mask(
@@ -312,6 +360,7 @@ class RSPropagator(OpticalLayer):
             data=data,
             grid=work_field.grid,
             spectrum=work_field.spectrum,
+            polarization_mode=work_field.polarization_mode,
             domain=work_field.domain,
             kx_pixel_size_cyc_per_um=work_field.kx_pixel_size_cyc_per_um,
             ky_pixel_size_cyc_per_um=work_field.ky_pixel_size_cyc_per_um,
@@ -499,6 +548,7 @@ class KSpacePropagator(OpticalLayer):
             data=data,
             grid=field.grid,
             spectrum=field.spectrum,
+            polarization_mode=field.polarization_mode,
             domain="kspace",
             kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
             ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,

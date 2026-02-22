@@ -19,11 +19,15 @@ class IntensitySensor(Sensor):
 
     sum_wavelengths: bool = False
     detector_masks: jnp.ndarray | None = None
+    channel_resolved: bool = False
 
     def measure(self, field: Field) -> jnp.ndarray:
         field = field.to_spatial()
         self.validate_for(field)
-        intensity = field.intensity()
+        if self.channel_resolved and field.is_jones:
+            intensity = field.component_intensity()
+        else:
+            intensity = field.intensity()
         if self.detector_masks is not None:
             masks = jnp.asarray(self.detector_masks, dtype=jnp.float32)
             if masks.ndim != 3:
@@ -33,10 +37,16 @@ class IntensitySensor(Sensor):
                     f"detector_masks spatial shape mismatch: got {masks.shape[1:]}, "
                     f"expected {(field.grid.ny, field.grid.nx)}"
                 )
-            per_wavelength = jnp.sum(
-                intensity[:, None, :, :] * masks[None, :, :, :],
-                axis=(-2, -1),
-            )  # (num_wavelengths, num_detectors)
+            if intensity.ndim == 4:
+                per_wavelength = jnp.sum(
+                    intensity[:, :, None, :, :] * masks[None, None, :, :, :],
+                    axis=(-2, -1),
+                )  # (num_wavelengths, 2, num_detectors)
+            else:
+                per_wavelength = jnp.sum(
+                    intensity[:, None, :, :] * masks[None, :, :, :],
+                    axis=(-2, -1),
+                )  # (num_wavelengths, num_detectors)
             if self.sum_wavelengths:
                 return jnp.sum(per_wavelength, axis=0)
             return per_wavelength
@@ -51,9 +61,11 @@ class FieldReadout(Sensor):
     Sensor that exposes complex field values in configurable representations.
 
     Supported values for `representation`:
-    - "complex": complex array `(wavelengths, ny, nx)`
-    - "real_imag": stacked real and imaginary parts `(wavelengths, ny, nx, 2)`
-    - "amplitude_phase": stacked amplitude and phase `(wavelengths, ny, nx, 2)`
+    - "complex": complex array:
+      - scalar `(wavelengths, ny, nx)`
+      - jones `(wavelengths, 2, ny, nx)`
+    - "real_imag": stacked real/imag in trailing axis
+    - "amplitude_phase": stacked amplitude/phase in trailing axis
     """
 
     representation: str = "complex"

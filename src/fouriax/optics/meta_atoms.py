@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from itertools import product
+from typing import Literal
 
 import jax
 import jax.numpy as jnp
@@ -186,27 +187,17 @@ class MetaAtomInterpolationLayer(OpticalLayer):
     raw_geometry_params: jnp.ndarray
     min_geometry_params: jnp.ndarray
     max_geometry_params: jnp.ndarray
+    polarization_mode: Literal["scalar", "jones_diagonal"] = "scalar"
 
-    def bounded_geometry_params(self) -> jnp.ndarray:
-        """Map unconstrained parameters into physical bounds via sigmoid."""
-        raw = jnp.asarray(self.raw_geometry_params, dtype=jnp.float32)
+    def _bounded_geometry_params_scalar(self, raw: jnp.ndarray) -> jnp.ndarray:
         min_v = jnp.asarray(self.min_geometry_params, dtype=jnp.float32)
         max_v = jnp.asarray(self.max_geometry_params, dtype=jnp.float32)
-
-        if min_v.ndim != 1 or max_v.ndim != 1:
-            raise ValueError("min/max geometry bounds must be 1D arrays")
-        if min_v.shape != max_v.shape:
-            raise ValueError("min/max geometry bounds must have the same shape")
-        if min_v.shape[0] != self.library.num_parameters:
-            raise ValueError("min/max geometry bounds length must match library parameter count")
-
         if raw.ndim == 1:
             if raw.shape[0] != self.library.num_parameters:
                 raise ValueError(
                     "raw_geometry_params length must match library parameter axes count"
                 )
             return min_v + (max_v - min_v) * jax.nn.sigmoid(raw)
-
         if raw.ndim >= 2:
             if raw.shape[0] == self.library.num_parameters:
                 raw_param_first = raw
@@ -219,13 +210,107 @@ class MetaAtomInterpolationLayer(OpticalLayer):
             min_map = min_v[:, None, None]
             max_map = max_v[:, None, None]
             return min_map + (max_map - min_map) * jax.nn.sigmoid(raw_param_first)
-
         raise ValueError("raw_geometry_params must be 1D or parameter map")
+
+    def _bounded_geometry_params_jones_diagonal(self, raw: jnp.ndarray) -> jnp.ndarray:
+        min_v = jnp.asarray(self.min_geometry_params, dtype=jnp.float32)
+        max_v = jnp.asarray(self.max_geometry_params, dtype=jnp.float32)
+        num_p = self.library.num_parameters
+        if raw.ndim == 2:
+            if raw.shape != (2, num_p):
+                raise ValueError(
+                    "raw_geometry_params must have shape (2, num_parameters) for "
+                    "jones_diagonal global mode"
+                )
+            return min_v[None, :] + (max_v - min_v)[None, :] * jax.nn.sigmoid(raw)
+        if raw.ndim == 3 and num_p == 1:
+            raw_param = raw[:, None, :, :]
+        elif raw.ndim == 4:
+            raw_param = raw
+        else:
+            raise ValueError(
+                "raw_geometry_params must have shape (2, num_parameters, ny, nx) for "
+                "jones_diagonal map mode"
+            )
+        if raw_param.shape[:2] != (2, num_p):
+            raise ValueError(
+                "raw_geometry_params must have leading axes (2, num_parameters) in "
+                "jones_diagonal mode"
+            )
+        min_map = min_v[None, :, None, None]
+        max_map = max_v[None, :, None, None]
+        return min_map + (max_map - min_map) * jax.nn.sigmoid(raw_param)
+
+    def bounded_geometry_params(self) -> jnp.ndarray:
+        """Map unconstrained parameters into physical bounds via sigmoid."""
+        raw = jnp.asarray(self.raw_geometry_params, dtype=jnp.float32)
+        min_v = jnp.asarray(self.min_geometry_params, dtype=jnp.float32)
+        max_v = jnp.asarray(self.max_geometry_params, dtype=jnp.float32)
+        if min_v.ndim != 1 or max_v.ndim != 1:
+            raise ValueError("min/max geometry bounds must be 1D arrays")
+        if min_v.shape != max_v.shape:
+            raise ValueError("min/max geometry bounds must have the same shape")
+        if min_v.shape[0] != self.library.num_parameters:
+            raise ValueError("min/max geometry bounds length must match library parameter count")
+        if self.polarization_mode == "scalar":
+            return self._bounded_geometry_params_scalar(raw)
+        if self.polarization_mode == "jones_diagonal":
+            return self._bounded_geometry_params_jones_diagonal(raw)
+        raise ValueError("polarization_mode must be one of: scalar, jones_diagonal")
 
     def forward(self, field: Field) -> Field:
         self.validate_for(field)
-
         geometry = self.bounded_geometry_params()
+        if self.polarization_mode == "jones_diagonal":
+            if not field.is_jones:
+                raise ValueError(
+                    "MetaAtomInterpolationLayer with polarization_mode='jones_diagonal' "
+                    "requires a jones field"
+                )
+            if geometry.ndim == 2:
+                tx = self.library.interpolate_complex(
+                    geometry_params=geometry[0][None, :],
+                    wavelengths_um=field.spectrum.wavelengths_um,
+                )[0]
+                ty = self.library.interpolate_complex(
+                    geometry_params=geometry[1][None, :],
+                    wavelengths_um=field.spectrum.wavelengths_um,
+                )[0]
+                out_x = field.data[:, 0] * tx[:, None, None].astype(field.data.dtype)
+                out_y = field.data[:, 1] * ty[:, None, None].astype(field.data.dtype)
+            else:
+                if geometry.ndim != 4 or geometry.shape[0] != 2:
+                    raise ValueError(
+                        "geometry shape mismatch for jones_diagonal map mode"
+                    )
+                if geometry.shape[2:] != (field.grid.ny, field.grid.nx):
+                    raise ValueError(
+                        "geometry map shape mismatch: got "
+                        f"{geometry.shape[2:]}, expected {(field.grid.ny, field.grid.nx)}"
+                    )
+                geom_x = jnp.moveaxis(geometry[0], 0, -1)
+                geom_y = jnp.moveaxis(geometry[1], 0, -1)
+                tx = self.library.interpolate_complex(
+                    geometry_params=geom_x,
+                    wavelengths_um=field.spectrum.wavelengths_um,
+                )
+                ty = self.library.interpolate_complex(
+                    geometry_params=geom_y,
+                    wavelengths_um=field.spectrum.wavelengths_um,
+                )
+                tx_mod = jnp.moveaxis(tx, -1, 0).astype(field.data.dtype)
+                ty_mod = jnp.moveaxis(ty, -1, 0).astype(field.data.dtype)
+                out_x = field.data[:, 0] * tx_mod
+                out_y = field.data[:, 1] * ty_mod
+            return Field(
+                data=jnp.stack([out_x, out_y], axis=1),
+                grid=field.grid,
+                spectrum=field.spectrum,
+                polarization_mode=field.polarization_mode,
+                domain=field.domain,
+                kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+                ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+            )
 
         if geometry.ndim == 1:
             transmission = self.library.interpolate_complex(
@@ -233,10 +318,13 @@ class MetaAtomInterpolationLayer(OpticalLayer):
                 wavelengths_um=field.spectrum.wavelengths_um,
             )[0]
             modulation = transmission[:, None, None].astype(field.data.dtype)
+            if field.is_jones:
+                modulation = modulation[:, None, :, :]
             return Field(
                 data=field.data * modulation,
                 grid=field.grid,
                 spectrum=field.spectrum,
+                polarization_mode=field.polarization_mode,
                 domain=field.domain,
                 kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
                 ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
@@ -254,10 +342,13 @@ class MetaAtomInterpolationLayer(OpticalLayer):
             wavelengths_um=field.spectrum.wavelengths_um,
         )
         modulation = jnp.moveaxis(transmission, -1, 0).astype(field.data.dtype)
+        if field.is_jones:
+            modulation = modulation[:, None, :, :]
         return Field(
             data=field.data * modulation,
             grid=field.grid,
             spectrum=field.spectrum,
+            polarization_mode=field.polarization_mode,
             domain=field.domain,
             kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
             ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
@@ -266,6 +357,13 @@ class MetaAtomInterpolationLayer(OpticalLayer):
     def validate_for(self, field: Field) -> None:
         super().validate_for(field)
         self.library.validate()
+        if self.polarization_mode not in ("scalar", "jones_diagonal"):
+            raise ValueError("polarization_mode must be one of: scalar, jones_diagonal")
+        if self.polarization_mode == "jones_diagonal" and not field.is_jones:
+            raise ValueError(
+                "MetaAtomInterpolationLayer with polarization_mode='jones_diagonal' "
+                "requires a jones field"
+            )
 
         wav = np.asarray(field.spectrum.wavelengths_um)
         lib_wav = np.asarray(self.library.wavelengths_um)
@@ -282,4 +380,7 @@ class MetaAtomInterpolationLayer(OpticalLayer):
             "bounded_geometry_params": self.bounded_geometry_params(),
             "min_geometry_params": jnp.asarray(self.min_geometry_params, dtype=jnp.float32),
             "max_geometry_params": jnp.asarray(self.max_geometry_params, dtype=jnp.float32),
+            "polarization_mode": jnp.asarray(
+                0 if self.polarization_mode == "scalar" else 1, dtype=jnp.int32
+            ),
         }

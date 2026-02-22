@@ -2,77 +2,73 @@
 
 ## Repo State
 
-- Branch: `feat/fourier-hybrid-module-na`
-- HEAD: `4a2ab0f` (`feat: add propagator facade and migrate examples`)
-- Working tree:
-  - modified: `docs/PLANNED_ADDITIONS.md`
+- Branch: `refactor/na-planning-thin-module`
+- HEAD: `76e27f6` (`Extract NA planning and simplify OpticalModule executor`)
+- Current uncommitted changes:
+  - `M docs/HANDOFF.md`
+  - `M docs/PLANNED_ADDITIONS.md`
+  - `M src/fouriax/optics/__init__.py`
+  - `D src/fouriax/optics/bandlimit.py`
+  - `M src/fouriax/optics/na_planning.py`
+  - `M src/fouriax/optics/propagation.py`
 
-## Completed
+## Current Architecture
 
-- Added unified public propagator facade: `Propagator(mode="auto"|"asm"|"rs"|"kspace")`.
-- Kept existing specialized propagators (`ASMPropagator`, `RSPropagator`, `KSpacePropagator`, `AutoPropagator`) for low-level use.
-- Enabled direct propagator usage inside `OpticalModule.layers` when `distance_um` is defined.
-- Added module-level propagation planning to resolve auto choices before execution.
-- Added RS `na_limit` support and conservative NA merge behavior (`min(existing, scheduled)`).
-- Updated all `scripts/*_example.py` to use the new facade style.
+- `OpticalModule` is now a thin sequential executor only:
+  - `forward`, `measure`, `trace`, `parameters`
+  - no internal NA schedule computation or layer mutation
+- NA geometry/planning is externalized to `src/fouriax/optics/na_planning.py`.
+- Domain transitions are explicit with:
+  - `FourierTransform`
+  - `InverseFourierTransform`
+- Propagation selection is explicit via `plan_propagation(...)`.
+- `AutoPropagator` and `CoherentPropagator` are removed.
+- `ASMPropagator` composes FFT-domain operations explicitly via layers and `KSpacePropagator`.
 
-## Open Work
+## Latest Local Delta (Not Committed Yet)
 
-- Primary next goal: add incoherent imaging support with shift-invariant PSF/OTF operators.
-- Keep polarization/Jones and rectangular meta-atom additions staged after incoherent imaging core lands.
+- Moved NA mask utility into NA planner module:
+  - `build_na_mask` now lives in `src/fouriax/optics/na_planning.py`
+- Deleted legacy file:
+  - `src/fouriax/optics/bandlimit.py`
+- Updated imports/exports accordingly:
+  - `src/fouriax/optics/__init__.py`
+  - `src/fouriax/optics/propagation.py`
 
-## Key Files
+## Docs Updated
 
-- `src/fouriax/optics/propagation.py`: propagator implementations + new `Propagator` facade.
-- `src/fouriax/optics/layers.py`: module planning + inline propagator handling.
-- `src/fouriax/optics/plotting.py`: plotting now uses planned layers.
-- `tests/test_propagation_selection.py`: facade mode dispatch and auto-precompute tests.
-- `docs/PLANNED_ADDITIONS.md`: roadmap (including coherence phase).
+- Architecture doc is now at `docs/ARCHITECTURE.md` and reflects the current implementation.
+- Planned roadmap updated in `docs/PLANNED_ADDITIONS.md`:
+  - removed already-implemented unpolarized holography and incoherent imaging roadmap items
+  - added arbitrary per-pixel transmission filter support
+  - added QE-curve integration in sensor path
 
-## Runbook
+## Validation
 
-- Setup:
+Last checks run after moving `build_na_mask`:
 
 ```bash
-scripts/dev_setup.sh
+source .venv/bin/activate
+ruff check src tests scripts
+pytest -q tests/test_na_schedule.py
 ```
 
-- Local quality gate:
+Both passed.
+
+## Recommended Next Steps
+
+1. Run full test suite before commit:
 
 ```bash
-scripts/tests_local.sh
+source .venv/bin/activate
+pytest -q
 ```
 
-- Targeted checks used during recent changes:
+2. Commit current local delta (`build_na_mask` move + docs updates).
 
-```bash
-.venv/bin/python -m pytest -q tests/test_propagation_selection.py tests/test_optical_module.py tests/test_na_schedule.py
-MPLBACKEND=Agg .venv/bin/python scripts/4f_comparison_example.py
-MPLBACKEND=Agg .venv/bin/python scripts/lens_optimization_example.py
-MPLBACKEND=Agg .venv/bin/python scripts/metaatom_optimization_example.py
-```
-
-## Next Tasks
-
-1. Implement incoherent imaging operators (`IncoherentImagingLayer` / `OTFImagingLayer`).
-   Done when: PSF and OTF implementations are numerically consistent and covered by parity tests.
-2. Integrate incoherent mode into example workflows.
-   Done when: at least one example script demonstrates incoherent image formation and saves reproducible artifacts.
-3. Add explicit API contract and tests for coherent vs incoherent paths.
-   Done when: behavior differences are validated in tests and discoverable from public API docs.
-
-## Risks
-
-- Boundary/padding choices in PSF convolution can bias optimization results.
-- Incoherent operators can be confused with coherent k-space propagation unless contracts stay explicit.
-- Runtime and memory growth for large kernels/grids.
-
-## Fresh Codex Prompt
-
-```text
-Work in /Users/liam/fouriax on branch feat/fourier-hybrid-module-na.
-First read docs/HANDOFF.md and docs/PLANNED_ADDITIONS.md.
-Use .venv
-Primary goal: implement incoherent imaging support (shift-invariant PSF/OTF), starting with real-space imaging scope.
-Run pytest -q tests/test_propagation_selection.py tests/test_optical_module.py tests/test_na_schedule.py plus new incoherent-imaging tests.
-```
+3. Start roadmap implementation from `docs/PLANNED_ADDITIONS.md`:
+   - Jones/polarization support
+   - rectangular meta-atom library
+   - polarized dual-pattern holography
+   - arbitrary transmission filter layers
+   - sensor QE weighting
