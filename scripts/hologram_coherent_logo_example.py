@@ -130,11 +130,6 @@ def main() -> None:
     summary_path = out_dir / "hologram_coherent_logo_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    np.save(out_dir / "hologram_coherent_logo_phase.npy", np.asarray(phase_opt))
-    np.save(out_dir / "hologram_coherent_logo_target.npy", np.asarray(target))
-    np.save(out_dir / "hologram_coherent_logo_recon.npy", np.asarray(recon_norm))
-    print(f"saved: {summary_path}")
-
     try:
         import matplotlib.pyplot as plt
     except Exception:

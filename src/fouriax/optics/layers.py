@@ -5,7 +5,7 @@ from typing import Literal
 
 import jax.numpy as jnp
 
-from fouriax.core.fft import fftconvolve
+from fouriax.core.fft import fftconvolve, fftconvolve_same_with_otf
 from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.model import Field
 
@@ -18,6 +18,50 @@ def _expand_map(
     name: str,
 ) -> jnp.ndarray:
     arr = jnp.asarray(value, dtype=dtype)
+    if field.is_jones:
+        if arr.ndim == 0:
+            return arr
+        if arr.ndim == 2:
+            if arr.shape != (field.grid.ny, field.grid.nx):
+                raise ValueError(
+                    f"{name} shape mismatch: got {arr.shape}, expected "
+                    f"{(field.grid.ny, field.grid.nx)}"
+                )
+            return arr[None, None, :, :]
+        if arr.ndim == 3:
+            if arr.shape[1:] != (field.grid.ny, field.grid.nx):
+                raise ValueError(
+                    f"{name} shape mismatch: got {arr.shape[1:]}, "
+                    f"expected {(field.grid.ny, field.grid.nx)}"
+                )
+            if arr.shape[0] not in (1, 2, field.spectrum.size):
+                raise ValueError(
+                    f"{name} leading-axis mismatch: got {arr.shape[0]}, expected 1, 2, "
+                    f"or {field.spectrum.size}"
+                )
+            if arr.shape[0] == 2:
+                return arr[None, :, :, :]
+            return arr[:, None, :, :]
+        if arr.ndim == 4:
+            if arr.shape[2:] != (field.grid.ny, field.grid.nx):
+                raise ValueError(
+                    f"{name} shape mismatch: got {arr.shape[2:]}, "
+                    f"expected {(field.grid.ny, field.grid.nx)}"
+                )
+            if arr.shape[0] not in (1, field.spectrum.size):
+                raise ValueError(
+                    f"{name} wavelength axis mismatch: got {arr.shape[0]}, expected 1 or "
+                    f"{field.spectrum.size}"
+                )
+            if arr.shape[1] not in (1, 2):
+                raise ValueError(
+                    f"{name} polarization axis mismatch: got {arr.shape[1]}, expected 1 or 2"
+                )
+            return arr
+        raise ValueError(
+            f"{name} must be scalar, (ny, nx), (k, ny, nx), or (wavelength, pol, ny, nx)"
+        )
+
     if arr.ndim == 0:
         return arr
     if arr.ndim == 2:
@@ -39,6 +83,41 @@ def _expand_map(
             )
         return arr
     raise ValueError(f"{name} must be scalar, (ny, nx), or (num_wavelengths, ny, nx)")
+
+
+def _expand_jones_matrix_map(
+    jones_matrix: jnp.ndarray,
+    field: Field,
+    *,
+    name: str,
+) -> jnp.ndarray:
+    arr = jnp.asarray(jones_matrix, dtype=field.data.dtype)
+    if not field.is_jones:
+        raise ValueError(f"{name} requires polarization_mode='jones'")
+    if arr.ndim == 2:
+        if arr.shape != (2, 2):
+            raise ValueError(f"{name} shape mismatch: got {arr.shape}, expected (2, 2)")
+        return arr
+    if arr.ndim == 4:
+        if arr.shape[:2] != (2, 2) or arr.shape[2:] != (field.grid.ny, field.grid.nx):
+            raise ValueError(
+                f"{name} shape mismatch: got {arr.shape}, expected (2, 2, ny, nx)"
+            )
+        return arr[None, :, :, :, :]
+    if arr.ndim == 5:
+        if arr.shape[0] not in (1, field.spectrum.size):
+            raise ValueError(
+                f"{name} wavelength axis mismatch: got {arr.shape[0]}, expected 1 or "
+                f"{field.spectrum.size}"
+            )
+        if arr.shape[1:3] != (2, 2) or arr.shape[3:] != (field.grid.ny, field.grid.nx):
+            raise ValueError(
+                f"{name} shape mismatch: got {arr.shape}, expected (w, 2, 2, ny, nx)"
+            )
+        return arr
+    raise ValueError(
+        f"{name} must have shape (2, 2), (2, 2, ny, nx), or (wavelength, 2, 2, ny, nx)"
+    )
 
 
 def _require_domain(
@@ -70,6 +149,7 @@ def _with_field_metadata(
         data=data,
         grid=field.grid,
         spectrum=field.spectrum,
+        polarization_mode=field.polarization_mode,
         domain=field.domain if domain is None else domain,
         kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
         ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
@@ -103,33 +183,19 @@ def _centered_delta_field(field: Field) -> Field:
     data = jnp.zeros_like(field.data)
     cy = field.grid.ny // 2
     cx = field.grid.nx // 2
-    data = data.at[:, cy, cx].set(1.0 + 0.0j)
+    if field.is_jones:
+        data = data.at[:, :, cy, cx].set(1.0 + 0.0j)
+    else:
+        data = data.at[:, cy, cx].set(1.0 + 0.0j)
     return Field(
         data=data,
         grid=field.grid,
         spectrum=field.spectrum,
+        polarization_mode=field.polarization_mode,
         domain="spatial",
         kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
         ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
     )
-
-
-def _linear_convolve_same_with_otf(
-    image_2d: jnp.ndarray,
-    otf_2d: jnp.ndarray,
-    *,
-    kernel_shape: tuple[int, int],
-) -> jnp.ndarray:
-    ky, kx = kernel_shape
-    ny, nx = image_2d.shape
-    full_shape = (ny + ky - 1, nx + kx - 1)
-    if otf_2d.shape != full_shape:
-        raise ValueError(f"otf shape mismatch: got {otf_2d.shape}, expected {full_shape}")
-    image_fft = jnp.fft.fftn(image_2d, s=full_shape, axes=(-2, -1))
-    full = jnp.fft.ifftn(image_fft * otf_2d, s=full_shape, axes=(-2, -1))
-    y0 = (ky - 1) // 2
-    x0 = (kx - 1) // 2
-    return full[y0 : y0 + ny, x0 : x0 + nx].real
 
 
 @dataclass(frozen=True)
@@ -243,6 +309,36 @@ class ComplexMask(OpticalLayer):
 
 
 @dataclass(frozen=True)
+class JonesMatrixLayer(OpticalLayer):
+    """Spatial-domain Jones matrix modulation layer."""
+
+    jones_matrix: jnp.ndarray
+
+    def forward(self, field: Field) -> Field:
+        _require_domain(field, expected="spatial", layer_name="JonesMatrixLayer")
+        self.validate_for(field)
+        matrix = _expand_jones_matrix_map(self.jones_matrix, field, name="jones_matrix")
+        ex = field.data[:, 0, :, :]
+        ey = field.data[:, 1, :, :]
+        if matrix.ndim == 2:
+            out_ex = matrix[0, 0] * ex + matrix[0, 1] * ey
+            out_ey = matrix[1, 0] * ex + matrix[1, 1] * ey
+        else:
+            out_ex = matrix[:, 0, 0, :, :] * ex + matrix[:, 0, 1, :, :] * ey
+            out_ey = matrix[:, 1, 0, :, :] * ex + matrix[:, 1, 1, :, :] * ey
+        out = jnp.stack([out_ex, out_ey], axis=1)
+        return _with_field_metadata(out, field)
+
+    def validate_for(self, field: Field) -> None:
+        super().validate_for(field)
+        if not field.is_jones:
+            raise ValueError("JonesMatrixLayer requires polarization_mode='jones'")
+
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        return {"jones_matrix": jnp.asarray(self.jones_matrix, dtype=jnp.complex64)}
+
+
+@dataclass(frozen=True)
 class KSpacePhaseMask(OpticalLayer):
     """k-domain phase-only modulation layer."""
 
@@ -328,6 +424,44 @@ class KSpaceComplexMask(OpticalLayer):
         params = {
             "amplitude_map": jnp.asarray(self.amplitude_map, dtype=jnp.float32),
             "phase_map_rad": jnp.asarray(self.phase_map_rad, dtype=jnp.float32),
+        }
+        if self.aperture_diameter_um is not None:
+            params["aperture_diameter_um"] = jnp.asarray(
+                self.aperture_diameter_um, dtype=jnp.float32
+            )
+        return params
+
+
+@dataclass(frozen=True)
+class KJonesMatrixLayer(OpticalLayer):
+    """k-domain Jones matrix modulation layer."""
+
+    jones_matrix: jnp.ndarray
+    aperture_diameter_um: float | None = None
+
+    def forward(self, field: Field) -> Field:
+        _require_domain(field, expected="kspace", layer_name="KJonesMatrixLayer")
+        self.validate_for(field)
+        matrix = _expand_jones_matrix_map(self.jones_matrix, field, name="jones_matrix")
+        ex = field.data[:, 0, :, :]
+        ey = field.data[:, 1, :, :]
+        if matrix.ndim == 2:
+            out_ex = matrix[0, 0] * ex + matrix[0, 1] * ey
+            out_ey = matrix[1, 0] * ex + matrix[1, 1] * ey
+        else:
+            out_ex = matrix[:, 0, 0, :, :] * ex + matrix[:, 0, 1, :, :] * ey
+            out_ey = matrix[:, 1, 0, :, :] * ex + matrix[:, 1, 1, :, :] * ey
+        out = jnp.stack([out_ex, out_ey], axis=1)
+        return _with_field_metadata(out, field)
+
+    def validate_for(self, field: Field) -> None:
+        super().validate_for(field)
+        if not field.is_jones:
+            raise ValueError("KJonesMatrixLayer requires polarization_mode='jones'")
+
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        params: dict[str, jnp.ndarray] = {
+            "jones_matrix": jnp.asarray(self.jones_matrix, dtype=jnp.complex64)
         }
         if self.aperture_diameter_um is not None:
             params["aperture_diameter_um"] = jnp.asarray(
@@ -429,6 +563,8 @@ class IncoherentImager(OpticalLayer):
 
     def build_psf(self, field: Field) -> jnp.ndarray:
         _require_domain(field, expected="spatial", layer_name="IncoherentImager")
+        if field.is_jones:
+            raise ValueError("IncoherentImager currently supports scalar fields only")
         spatial_field = field
         self.validate_for(spatial_field)
         if self.distance_um <= 0:
@@ -499,7 +635,7 @@ class IncoherentImager(OpticalLayer):
             )
             for i in range(spatial_field.spectrum.size):
                 outputs.append(
-                    _linear_convolve_same_with_otf(
+                    fftconvolve_same_with_otf(
                         intensity[i],
                         otf[i],
                         kernel_shape=(ky, kx),
@@ -516,6 +652,7 @@ class IncoherentImager(OpticalLayer):
             data=amplitude.astype(spatial_field.data.dtype),
             grid=spatial_field.grid,
             spectrum=spatial_field.spectrum,
+            polarization_mode=spatial_field.polarization_mode,
             domain="spatial",
             kx_pixel_size_cyc_per_um=spatial_field.kx_pixel_size_cyc_per_um,
             ky_pixel_size_cyc_per_um=spatial_field.ky_pixel_size_cyc_per_um,

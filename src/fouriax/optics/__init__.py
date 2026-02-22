@@ -1,6 +1,5 @@
 """Core optics data models."""
 
-from fouriax.optics.bandlimit import build_na_mask
 from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
@@ -8,6 +7,8 @@ from fouriax.optics.layers import (
     FourierTransform,
     IncoherentImager,
     InverseFourierTransform,
+    JonesMatrixLayer,
+    KJonesMatrixLayer,
     KSpaceAmplitudeMask,
     KSpaceComplexMask,
     KSpacePhaseMask,
@@ -29,6 +30,7 @@ from fouriax.optics.meta_atoms import MetaAtomInterpolationLayer, MetaAtomLibrar
 from fouriax.optics.model import Field, Grid, Spectrum
 from fouriax.optics.na_planning import (
     apply_na_limits,
+    build_na_mask,
     collect_propagation_segments,
     collect_stops,
     effective_na,
@@ -64,6 +66,8 @@ __all__ = [
     "KSpacePhaseMask",
     "KSpaceAmplitudeMask",
     "KSpaceComplexMask",
+    "JonesMatrixLayer",
+    "KJonesMatrixLayer",
     "ThinLens",
     "IncoherentImager",
     "IntensitySensor",

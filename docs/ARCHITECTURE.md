@@ -39,15 +39,19 @@ Key methods:
 
 `Field` is the tensor passed between layers:
 
-- `data`: complex array shaped `(num_wavelengths, ny, nx)`
+- `data`:
+  - scalar mode: complex array `(num_wavelengths, ny, nx)`
+  - Jones mode: complex array `(num_wavelengths, 2, ny, nx)` with channels `(Ex, Ey)`
 - `grid`: `Grid`
 - `spectrum`: `Spectrum`
+- `polarization_mode`: `"scalar"` or `"jones"`
 - `domain`: `"spatial"` or `"kspace"`
 - k-space pixel metadata
 
 Operations:
 
 - `intensity()`, `phase()`, `power()`, `normalize_power()`
+- `component_intensity()` for channel-resolved Jones diagnostics
 - `apply_phase()`, `apply_amplitude()`
 - `to_kspace()`, `to_spatial()` for explicit FFT/IFFT conversion
 
@@ -116,17 +120,24 @@ Domain-specific layers validate input domain and raise if incorrect.
 - `PhaseMask`
 - `AmplitudeMask`
 - `ComplexMask`
+- `JonesMatrixLayer`
 - `ThinLens`
 
 These require `field.domain == "spatial"`.
+
+`PhaseMask`/`AmplitudeMask`/`ComplexMask`/`ThinLens` broadcast over Jones channels in Jones mode.
+`JonesMatrixLayer` is the polarization-mixing (full 2x2) spatial-domain layer.
 
 ### K-Space Modulation Layers
 
 - `KSpacePhaseMask`
 - `KSpaceAmplitudeMask`
 - `KSpaceComplexMask`
+- `KJonesMatrixLayer`
 
 These require `field.domain == "kspace"`.
+
+`KJonesMatrixLayer` is the k-space analog of `JonesMatrixLayer`.
 
 ### `IncoherentImager`
 
@@ -146,6 +157,10 @@ Normalization controls:
 - `normalization_reference`: `"near_1um"`, `"near_wavelength"`, `"at_imaging_distance"`
 - optional explicit `normalization_reference_distance_um`
 
+Current limitation:
+
+- `IncoherentImager` currently supports scalar fields only (Jones mode rejected explicitly).
+
 ## Propagation Architecture
 
 Implemented in `propagation.py`.
@@ -157,6 +172,7 @@ Implemented in `propagation.py`.
   - convolution with Rayleigh-Sommerfeld delta response
   - optional NA mask
   - optional sampling planner / precomputed grid
+  - Jones mode support via independent propagation of `Ex`/`Ey` in isotropic media (v1)
 
 - `ASMPropagator`
   - spatial-domain input
@@ -166,11 +182,13 @@ Implemented in `propagation.py`.
     - `InverseFourierTransform`
   - optional sampling planner / precomputed grid
   - optional NA mask
+  - Jones mode support via FFT/k-space propagation of both channels
 
 - `KSpacePropagator`
   - k-space input
   - diagonal transfer-function multiplication
   - `include_evanescent` controls whether evanescent terms are retained
+  - Jones mode support via identical per-channel transfer multiplication
 
 ### Propagator Planning
 
@@ -205,11 +223,38 @@ Implemented in `sensors.py`.
 - `IntensitySensor`
   - computes intensity, optional wavelength sum
   - optional detector integration via `detector_masks`
+  - optional `channel_resolved=True` for Jones per-channel intensity output
 
 - `FieldReadout`
   - returns `"complex"`, `"real_imag"`, or `"amplitude_phase"` representations
+  - preserves Jones channel axis when present
 
 Current sensor behavior converts inputs to spatial domain internally (`field.to_spatial()`).
+
+## Meta-Atom Layers
+
+Implemented in `meta_atoms.py`.
+
+- `MetaAtomLibrary`
+  - regular-grid LUT over wavelength + arbitrary geometry parameter axes
+  - multilinear interpolation over geometry and 1D interpolation over wavelength
+
+- `MetaAtomInterpolationLayer`
+  - general parameterized modulation layer using `MetaAtomLibrary`
+  - `polarization_mode="scalar"` applies one complex transmission to scalar/Jones fields
+  - `polarization_mode="jones_diagonal"` applies independent LUT lookups to `Ex` and `Ey`
+    (diagonal Jones approximation, no cross-polarization coupling)
+
+This keeps meta-atom support as a specialized layer built on top of the generic `Field` /
+`OpticalLayer` abstractions.
+
+## FFT Utilities
+
+Implemented in `src/fouriax/core/fft.py`.
+
+- `fftconvolve(...)`: generic FFT convolution
+- `fftconvolve_same_with_otf(...)`: same-mode linear convolution using a precomputed OTF
+  (used by `IncoherentImager` OTF path)
 
 ## Losses and Matrix Utilities
 

@@ -95,18 +95,23 @@ class Field:
     """
     Complex optical field over a 2D grid for one or more wavelengths.
 
-    Data shape is `(num_wavelengths, ny, nx)`.
+    Data shape is:
+    - scalar mode: `(num_wavelengths, ny, nx)`
+    - jones mode: `(num_wavelengths, 2, ny, nx)` with channel order `(Ex, Ey)`
     `domain` indicates whether `data` is represented in spatial or k-space.
     """
 
     data: jnp.ndarray
     grid: Grid
     spectrum: Spectrum
+    polarization_mode: Literal["scalar", "jones"] = "scalar"
     domain: Literal["spatial", "kspace"] = "spatial"
     kx_pixel_size_cyc_per_um: float | None = None
     ky_pixel_size_cyc_per_um: float | None = None
 
     def __post_init__(self) -> None:
+        if self.polarization_mode not in ("scalar", "jones"):
+            raise ValueError("polarization_mode must be one of: scalar, jones")
         if self.domain not in ("spatial", "kspace"):
             raise ValueError("domain must be one of: spatial, kspace")
 
@@ -157,8 +162,45 @@ class Field:
         field.validate()
         return field
 
+    @classmethod
+    def plane_wave_jones(
+        cls,
+        grid: Grid,
+        spectrum: Spectrum,
+        ex: complex | jnp.ndarray = 1.0 + 0.0j,
+        ey: complex | jnp.ndarray = 0.0 + 0.0j,
+        dtype=jnp.complex64,
+    ) -> "Field":
+        ex_arr = jnp.asarray(ex, dtype=dtype)
+        ey_arr = jnp.asarray(ey, dtype=dtype)
+        base = jnp.ones((spectrum.size, grid.ny, grid.nx), dtype=dtype)
+        ex_data = base * ex_arr
+        ey_data = base * ey_arr
+        data = jnp.stack([ex_data, ey_data], axis=1)
+        field = cls(
+            data=data,
+            grid=grid,
+            spectrum=spectrum,
+            polarization_mode="jones",
+        )
+        field.validate()
+        return field
+
+    @property
+    def is_jones(self) -> bool:
+        return self.polarization_mode == "jones"
+
+    @property
+    def num_polarization_channels(self) -> int:
+        return 2 if self.is_jones else 1
+
+    def component_intensity(self) -> jnp.ndarray:
+        if self.is_jones:
+            return jnp.abs(self.data) ** 2
+        return (jnp.abs(self.data) ** 2)[:, None, :, :]
+
     def intensity(self) -> jnp.ndarray:
-        return jnp.abs(self.data) ** 2
+        return jnp.sum(self.component_intensity(), axis=1)
 
     def phase(self) -> jnp.ndarray:
         return jnp.angle(self.data)
@@ -171,11 +213,15 @@ class Field:
         if not bool(jnp.all(current > eps)):
             raise ValueError("cannot normalize field with near-zero power")
         scale = jnp.sqrt(jnp.asarray(target, dtype=current.dtype) / current)
-        scale = scale[:, None, None]
+        if self.is_jones:
+            scale = scale[:, None, None, None]
+        else:
+            scale = scale[:, None, None]
         return Field(
             data=self.data * scale,
             grid=self.grid,
             spectrum=self.spectrum,
+            polarization_mode=self.polarization_mode,
             domain=self.domain,
             kx_pixel_size_cyc_per_um=self.kx_pixel_size_cyc_per_um,
             ky_pixel_size_cyc_per_um=self.ky_pixel_size_cyc_per_um,
@@ -183,10 +229,13 @@ class Field:
 
     def apply_phase(self, phase_map: jnp.ndarray | float) -> "Field":
         phs = jnp.asarray(phase_map, dtype=jnp.float32)
+        if self.is_jones and phs.ndim in (2, 3):
+            phs = phs[:, None, :, :] if phs.ndim == 3 else phs[None, None, :, :]
         return Field(
             data=self.data * jnp.exp(1j * phs),
             grid=self.grid,
             spectrum=self.spectrum,
+            polarization_mode=self.polarization_mode,
             domain=self.domain,
             kx_pixel_size_cyc_per_um=self.kx_pixel_size_cyc_per_um,
             ky_pixel_size_cyc_per_um=self.ky_pixel_size_cyc_per_um,
@@ -194,10 +243,13 @@ class Field:
 
     def apply_amplitude(self, mask: jnp.ndarray | float) -> "Field":
         amp = jnp.asarray(mask, dtype=self.data.real.dtype)
+        if self.is_jones and amp.ndim in (2, 3):
+            amp = amp[:, None, :, :] if amp.ndim == 3 else amp[None, None, :, :]
         return Field(
             data=self.data * amp,
             grid=self.grid,
             spectrum=self.spectrum,
+            polarization_mode=self.polarization_mode,
             domain=self.domain,
             kx_pixel_size_cyc_per_um=self.kx_pixel_size_cyc_per_um,
             ky_pixel_size_cyc_per_um=self.ky_pixel_size_cyc_per_um,
@@ -213,6 +265,7 @@ class Field:
             data=data,
             grid=self.grid,
             spectrum=self.spectrum,
+            polarization_mode=self.polarization_mode,
             domain="kspace",
             kx_pixel_size_cyc_per_um=kx,
             ky_pixel_size_cyc_per_um=ky,
@@ -228,6 +281,7 @@ class Field:
             data=data,
             grid=self.grid,
             spectrum=self.spectrum,
+            polarization_mode=self.polarization_mode,
             domain="spatial",
             kx_pixel_size_cyc_per_um=kx,
             ky_pixel_size_cyc_per_um=ky,
@@ -249,9 +303,19 @@ class Field:
     def validate(self) -> None:
         self.grid.validate()
         self.spectrum.validate()
-        if self.data.ndim != 3:
-            raise ValueError("field data must have shape (num_wavelengths, ny, nx)")
-        expected_shape = (self.spectrum.size, self.grid.ny, self.grid.nx)
+        expected_shape: tuple[int, ...]
+        if self.polarization_mode == "scalar":
+            if self.data.ndim != 3:
+                raise ValueError(
+                    "scalar field data must have shape (num_wavelengths, ny, nx)"
+                )
+            expected_shape = (self.spectrum.size, self.grid.ny, self.grid.nx)
+        else:
+            if self.data.ndim != 4:
+                raise ValueError(
+                    "jones field data must have shape (num_wavelengths, 2, ny, nx)"
+                )
+            expected_shape = (self.spectrum.size, 2, self.grid.ny, self.grid.nx)
         if self.data.shape != expected_shape:
             raise ValueError(
                 f"field data shape mismatch: got {self.data.shape}, expected {expected_shape}"
