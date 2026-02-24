@@ -473,7 +473,12 @@ class KJonesMatrixLayer(OpticalLayer):
 @dataclass(frozen=True)
 class ThinLens(OpticalLayer):
     """
-    Ideal thin lens phase transform.
+    Ideal thin lens phase transform using a hyperbolic optical path phase.
+
+    The applied phase is
+        phi(x, y) = -k * (sqrt(x^2 + y^2 + f^2) - f)
+    which preserves the on-axis phase reference and is valid over a larger
+    domain than the paraxial quadratic approximation.
 
     All length quantities use micrometers (um).
     """
@@ -489,9 +494,13 @@ class ThinLens(OpticalLayer):
 
         x, y = field.grid.spatial_grid()
         r2 = x * x + y * y
+        f_um = jnp.asarray(self.focal_length_um, dtype=r2.dtype)
+        # Hyperbolic path-length delay relative to the on-axis ray.
+        path_delta_um = jnp.sqrt(r2 + f_um * f_um) - f_um
         phase_stack = []
         for wavelength_um in field.spectrum.wavelengths_um:
-            phi = -jnp.pi * r2 / (wavelength_um * self.focal_length_um)
+            k_um_inv = (2.0 * jnp.pi) / jnp.asarray(wavelength_um, dtype=r2.dtype)
+            phi = -k_um_inv * path_delta_um
             phase_stack.append(phi)
         phase = jnp.stack(phase_stack, axis=0)
 
