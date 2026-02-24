@@ -190,12 +190,23 @@ def proxy_loss(
     smoothness = filter_smoothness(raw_filter)
     return info_loss + smoothness_reg * smoothness
 
-    
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--train-spectra", type=Path, default=Path("data/meta_atoms/indian_pines/train_spectra_full.npy"))
-    parser.add_argument("--val-spectra", type=Path, default=Path("data/meta_atoms/indian_pines/val_spectra.npy"))
-    parser.add_argument("--wavelengths", type=Path, default=Path("data/meta_atoms/indian_pines/wavelengths.npy"))
+    parser.add_argument(
+        "--train-spectra",
+        type=Path,
+        default=Path("data/meta_atoms/indian_pines/train_spectra_full.npy"),
+    )
+    parser.add_argument(
+        "--val-spectra",
+        type=Path,
+        default=Path("data/meta_atoms/indian_pines/val_spectra.npy"),
+    )
+    parser.add_argument(
+        "--wavelengths",
+        type=Path,
+        default=Path("data/meta_atoms/indian_pines/wavelengths.npy"),
+    )
     parser.add_argument("--train-samples", type=int, default=200000)
     parser.add_argument("--val-samples", type=int, default=2048)
     parser.add_argument("--array-size", type=int, default=3)
@@ -455,7 +466,9 @@ def main() -> None:
     for i in range(num_filters):
         axes[0, 0].plot(wavelengths_np, filt_amp_opt[i], linewidth=1.5)
     axes[0, 0].set_title(
-        f"D-opt Optimized {args.array_size}x{args.array_size} Filter Amplitudes ({num_filters} channels)"
+        "D-opt Optimized "
+        f"{args.array_size}x{args.array_size} Filter Amplitudes "
+        f"({num_filters} channels)"
     )
     axes[0, 0].set_xlabel("Wavelength (nm)")
     axes[0, 0].set_ylabel("Amplitude Transmission")
@@ -473,7 +486,13 @@ def main() -> None:
 
     random_indices = jax.random.choice(key, val.shape[0], (n_examples,), replace=False)
     for i in random_indices:
-        (line,) = axes[1, 0].plot(wavelengths_np, val[i], alpha=0.9, linewidth=0.6, label=f"example {i}")
+        (line,) = axes[1, 0].plot(
+            wavelengths_np,
+            val[i],
+            alpha=0.9,
+            linewidth=0.6,
+            label=f"example {i}",
+        )
         axes[1, 0].plot(
             wavelengths_np,
             final_x_val_hat[i],

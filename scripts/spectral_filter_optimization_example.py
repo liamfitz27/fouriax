@@ -12,7 +12,14 @@ import optax
 from flax import linen as nn
 from sklearn.decomposition import PCA
 
-from fouriax.optics import AmplitudeMask, Field, Grid, IntensitySensor, OpticalModule, Spectrum
+from fouriax.optics import (
+    AmplitudeMask,
+    Field,
+    Grid,
+    IntensitySensor,
+    OpticalModule,
+    Spectrum,
+)
 
 
 class SpectralReconMLP(nn.Module):
@@ -31,6 +38,9 @@ def load_indian_pines(
     train_path: Path,
     val_path: Path,
     wavelengths_path: Path,
+    *,
+    spectral_slice_start: int,
+    spectral_slice_stop: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     train = np.asarray(np.load(train_path), dtype=np.float32)[
         :, spectral_slice_start:spectral_slice_stop
@@ -85,7 +95,10 @@ def make_optical_measurement(*, wavelengths_nm: np.ndarray, num_filters: int) ->
         raise ValueError(f"num_filters must be a perfect square, got {num_filters}")
     grid = Grid.from_extent(nx=array_size, ny=array_size, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_array(jnp.asarray(wavelengths_nm * 1e-3, dtype=jnp.float32))
-    sensor = IntensitySensor(sum_wavelengths=True, detector_masks=build_detector_masks(array_size))
+    sensor = IntensitySensor(
+        sum_wavelengths=True,
+        detector_masks=build_detector_masks(array_size),
+    )
     return {"array_size": array_size, "grid": grid, "spectrum": spectrum, "sensor": sensor}
 
 
@@ -98,12 +111,19 @@ def measure_batch_optical(
     spectrum: Spectrum,
     sensor: IntensitySensor,
 ) -> jnp.ndarray:
-    amp_map = jnp.sqrt(jnp.clip(a_matrix.T, 0.0, 1.0)).reshape((spectrum.size, array_size, array_size))
+    amp_map = jnp.sqrt(jnp.clip(a_matrix.T, 0.0, 1.0)).reshape(
+        (spectrum.size, array_size, array_size)
+    )
     module = OpticalModule(layers=(AmplitudeMask(amplitude_map=amp_map),), sensor=sensor)
 
     def measure_one(sample_spectrum: jnp.ndarray) -> jnp.ndarray:
-        sample_amp = jnp.sqrt(jnp.maximum(sample_spectrum, 0.0)).reshape((spectrum.size, 1, 1))
-        field_data = jnp.ones((spectrum.size, array_size, array_size), dtype=jnp.complex64) * sample_amp
+        sample_amp = jnp.sqrt(jnp.maximum(sample_spectrum, 0.0)).reshape(
+            (spectrum.size, 1, 1)
+        )
+        field_data = (
+            jnp.ones((spectrum.size, array_size, array_size), dtype=jnp.complex64)
+            * sample_amp
+        )
         field = Field(data=field_data, grid=grid, spectrum=spectrum, domain="spatial")
         return module.measure(field).astype(jnp.float32)
 
@@ -134,8 +154,6 @@ def main() -> None:
     train_path = Path("data/meta_atoms/indian_pines/train_spectra_full.npy")
     val_path = Path("data/meta_atoms/indian_pines/val_spectra.npy")
     wavelengths_path = Path("data/meta_atoms/indian_pines/wavelengths.npy")
-
-
     spectral_slice_start = 40
     spectral_slice_stop = 190
     proxy_steps = 2000
@@ -157,7 +175,13 @@ def main() -> None:
         if not p.exists():
             raise FileNotFoundError(f"missing file: {p}")
 
-    train_full, val_full, wavelengths_nm = load_indian_pines(train_path, val_path, wavelengths_path)
+    train_full, val_full, wavelengths_nm = load_indian_pines(
+        train_path,
+        val_path,
+        wavelengths_path,
+        spectral_slice_start=spectral_slice_start,
+        spectral_slice_stop=spectral_slice_stop,
+    )
     train = train_full[: min(train_samples, train_full.shape[0])]
     val = val_full[: min(val_samples, val_full.shape[0])]
     train_np = np.asarray(train, dtype=np.float32)
@@ -168,7 +192,10 @@ def main() -> None:
     pca_components = min(pca_components, n_wavelengths, train.shape[0])
     pca, basis_np = build_pca_basis(train, pca_components, seed)
     basis = jnp.asarray(basis_np, dtype=jnp.float32)
-    measurement = make_optical_measurement(wavelengths_nm=wavelengths_nm, num_filters=num_filters)
+    measurement = make_optical_measurement(
+        wavelengths_nm=wavelengths_nm,
+        num_filters=num_filters,
+    )
 
     key = jax.random.PRNGKey(seed)
     raw_filter = jax.random.normal(key, (num_filters, n_wavelengths), dtype=jnp.float32)
@@ -213,7 +240,10 @@ def main() -> None:
     raw_filter = best_raw_filter
     recon_model = SpectralReconMLP(hidden_dims=hidden_dims, out_dim=n_wavelengths)
     key, k_params, train_rng, eval_rng = jax.random.split(key, 4)
-    recon_params = recon_model.init({"params": k_params}, jnp.zeros((1, num_filters), dtype=jnp.float32))
+    recon_params = recon_model.init(
+        {"params": k_params},
+        jnp.zeros((1, num_filters), dtype=jnp.float32),
+    )
     params = {"raw_filter": raw_filter, "recon": recon_params}
 
     def measure_noisy_decode(
@@ -310,7 +340,10 @@ def main() -> None:
 
     for i in range(num_filters):
         axes[0, 0].plot(wavelengths_np, filt_amp_opt[i], linewidth=1.5)
-    axes[0, 0].set_title(f"Optimized {array_size}x{array_size} Filter Amplitudes ({num_filters} channels)")
+    axes[0, 0].set_title(
+        f"Optimized {array_size}x{array_size} Filter Amplitudes "
+        f"({num_filters} channels)"
+    )
     axes[0, 0].set_xlabel("Wavelength (nm)")
     axes[0, 0].set_ylabel("Amplitude Transmission")
     axes[0, 0].grid(alpha=0.3)
@@ -328,7 +361,13 @@ def main() -> None:
     random_indices = jax.random.choice(key, val.shape[0], (n_examples,), replace=False)
     for i in random_indices:
         idx = int(i)
-        (line,) = axes[1, 0].plot(wavelengths_np, val[idx], alpha=0.9, linewidth=0.6, label=f"example {idx}")
+        (line,) = axes[1, 0].plot(
+            wavelengths_np,
+            val[idx],
+            alpha=0.9,
+            linewidth=0.6,
+            label=f"example {idx}",
+        )
         axes[1, 0].plot(
             wavelengths_np,
             np.asarray(final_x_val_hat[idx]),
