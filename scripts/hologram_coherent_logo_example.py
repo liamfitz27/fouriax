@@ -20,6 +20,7 @@ from fouriax.optics import (
     PhaseMask,
     Spectrum,
     plan_propagation,
+    recommend_nyquist_grid,
 )
 
 IMAGE_PATH = Path("/Users/liam/Downloads/logo.jpg")
@@ -47,6 +48,8 @@ def main() -> None:
     parser.add_argument("--dy-um", type=float, default=1.0)
     parser.add_argument("--wavelength-um", type=float, default=0.532)
     parser.add_argument("--distance-um", type=float, default=1200.0)
+    parser.add_argument("--nyquist-factor", type=float, default=2.0)
+    parser.add_argument("--min-padding-factor", type=float, default=2.0)
     parser.add_argument("--steps", type=int, default=400)
     parser.add_argument("--lr", type=float, default=0.03)
     parser.add_argument("--seed", type=int, default=0)
@@ -60,11 +63,20 @@ def main() -> None:
     target = load_logo_target(IMAGE_PATH, grid=grid)
 
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
+    precomputed_grid = recommend_nyquist_grid(
+        grid=grid,
+        spectrum=spectrum,
+        nyquist_factor=args.nyquist_factor,
+        min_padding_factor=args.min_padding_factor,
+    )
     propagator = plan_propagation(
         mode="auto",
         grid=grid,
         spectrum=spectrum,
         distance_um=args.distance_um,
+        use_sampling_planner=False,
+        precomputed_grid=precomputed_grid,
+        warn_on_regime_mismatch=False,
     )
 
     def loss_fn(raw_phase: jnp.ndarray) -> jnp.ndarray:
@@ -119,6 +131,8 @@ def main() -> None:
         "grid": {"nx": grid.nx, "ny": grid.ny, "dx_um": grid.dx_um, "dy_um": grid.dy_um},
         "wavelength_um": args.wavelength_um,
         "distance_um": args.distance_um,
+        "nyquist_factor": args.nyquist_factor,
+        "min_padding_factor": args.min_padding_factor,
         "steps": args.steps,
         "learning_rate": args.lr,
         "seed": args.seed,

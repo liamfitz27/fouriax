@@ -11,12 +11,14 @@ requires-python = ">=3.12"
 license = { text = "Proprietary" }
 authors = [{ name = "fouriax contributors" }]
 dependencies = [
+  "flax>=0.10",
   "jax[cuda12]>=0.4.30; platform_system == 'Linux'",
   "jax>=0.4.30; platform_system != 'Linux'",
   "matplotlib>=3.8",
   "numpy>=2.0",
   "optax>=0.2.3",
   "ruff>=0.6",
+  "scikit-learn>=1.5",
 ]
 
 [project.optional-dependencies]
