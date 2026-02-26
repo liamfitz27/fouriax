@@ -1,5 +1,6 @@
 """Optimize spectral filters and reconstruction MLP for hyperspectral sensing."""
 
+#%% Imports
 from __future__ import annotations
 
 import json
@@ -15,10 +16,6 @@ import optax
 from flax import linen as nn
 from sklearn.decomposition import PCA
 
-from fouriax.example_utils import (
-    optimize_dataset_hybrid_module,
-    optimize_dataset_optical_module,
-)
 from fouriax.optics import (
     AmplitudeMask,
     Field,
@@ -27,7 +24,12 @@ from fouriax.optics import (
     OpticalModule,
     Spectrum,
 )
+from fouriax.optim import (
+    optimize_dataset_hybrid_module,
+    optimize_dataset_optical_module,
+)
 
+#%% Paths and Parameters
 ARTIFACTS_DIR = Path("artifacts")
 PLOT_PATH = ARTIFACTS_DIR / "spectral_filter_overview.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "spectral_filter_summary.json"
@@ -49,6 +51,7 @@ RECON_LR = 8e-4
 HIDDEN_DIMS = (128, 256, 384, 384)
 
 
+#%% MLP Decoder Model
 class SpectralReconMLP(nn.Module):
     hidden_dims: Sequence[int]
     out_dim: int
@@ -61,6 +64,7 @@ class SpectralReconMLP(nn.Module):
         return nn.Dense(self.out_dim)(x)
 
 
+#%% Data Loading and Helper Functions
 def load_indian_pines(
     train_path: Path,
     val_path: Path,
@@ -116,6 +120,7 @@ def build_detector_masks(array_size: int) -> jnp.ndarray:
     return jnp.asarray(masks, dtype=jnp.float32)
 
 
+#%% Optical Module
 def make_optical_measurement(*, wavelengths_nm: np.ndarray, num_filters: int) -> dict[str, object]:
     array_size = int(round(np.sqrt(num_filters)))
     if array_size * array_size != num_filters:
@@ -157,6 +162,7 @@ def measure_batch_optical(
     return jax.vmap(measure_one)(batch_spectra)
 
 
+#%% PCA-Space Proxy Objective
 def proxy_loss(
     raw_filter: jnp.ndarray,
     batch_spectra: jnp.ndarray | tuple[np.ndarray] | tuple[jnp.ndarray],
@@ -181,10 +187,12 @@ def proxy_loss(
 
 
 def main() -> None:
+    #%% Experiment Configuration
     train_path = Path("data/meta_atoms/indian_pines/train_spectra_full.npy")
     val_path = Path("data/meta_atoms/indian_pines/val_spectra.npy")
     wavelengths_path = Path("data/meta_atoms/indian_pines/wavelengths.npy")
 
+    #%% Load Data and Initialize Proxy Optimization
     for p in (train_path, val_path, wavelengths_path):
         if not p.exists():
             raise FileNotFoundError(f"missing file: {p}")
@@ -231,6 +239,7 @@ def main() -> None:
     proxy_steps_per_epoch = max(1, int(np.ceil(train_np.shape[0] / BATCH_SIZE)))
     proxy_epochs = max(1, int(np.ceil(PROXY_STEPS / proxy_steps_per_epoch)))
 
+    #%% Proxy Optimization Loop
     proxy_result = optimize_dataset_optical_module(
         init_params=raw_filter,
         build_module=build_filter_module,
@@ -248,6 +257,7 @@ def main() -> None:
         seed=SEED,
     )
 
+    #%% Reconstruction Model Setup
     raw_filter = proxy_result.params_result.best_params
     best_proxy_loss = proxy_result.params_result.best_metric_value
     recon_model = SpectralReconMLP(hidden_dims=HIDDEN_DIMS, out_dim=n_wavelengths)
@@ -289,6 +299,7 @@ def main() -> None:
     steps_per_epoch = max(1, int(np.ceil(train_np.shape[0] / BATCH_SIZE)))
     recon_epochs = max(1, int(np.ceil(RECON_STEPS / steps_per_epoch)))
 
+    #%% Reconstruction Training Loop
     recon_result = optimize_dataset_hybrid_module(
         init_optical_params=raw_filter,
         init_decoder_params=recon_params,
@@ -303,6 +314,7 @@ def main() -> None:
         seed=SEED,
     )
 
+    #%% Final Evaluation and Summary Metrics
     history_steps = [record.step for record in recon_result.params_result.val_history]
     history_val = [record.metrics["val_loss"] for record in recon_result.params_result.val_history]
     history_train = [recon_result.params_result.train_loss_history[step] for step in history_steps]
@@ -361,6 +373,7 @@ def main() -> None:
         json.dump(summary, f, indent=2)
     print(f"saved: {SUMMARY_PATH}")
 
+    #%% Inline Plots (and Save to `artifacts/`)
     wavelengths_np = np.asarray(wavelengths_nm)
     n_examples = min(4, val.shape[0])
     fig, axes = plt.subplots(2, 2, figsize=(12, 9))

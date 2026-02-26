@@ -7,7 +7,7 @@ from typing import Literal, cast
 import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
 
-from fouriax.core.fft import fftconvolve
+from fouriax.fft import fftconvolve
 from fouriax.optics.interfaces import OpticalLayer
 from fouriax.optics.model import Field, Grid, Spectrum
 from fouriax.optics.na_planning import build_na_mask

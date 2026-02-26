@@ -35,6 +35,7 @@ MATPLOTLIB_IMPORT_RE = re.compile(
     r"^\s*(?:import\s+matplotlib(?:\.\w+)?|from\s+matplotlib(?:\.\w+)*\s+import\s+.+)\s*$"
 )
 PLT_CLOSE_CALL_LINE_RE = re.compile(r"^(?P<indent>\s*)plt\.close\((?P<arg>[^)]*)\)\s*$")
+REPO_ROOT_SNIPPET_MARKER = "# NOTEBOOK_REPO_ROOT_SETUP"
 
 
 @dataclass
@@ -210,8 +211,9 @@ def script_to_cell_specs(source: str) -> list[ScriptCell]:
     if not any(CELL_MARKER_RE.match(line) for line in transformed.text.splitlines()):
         raise ValueError("No codebreaks detected (`#%%`). Add notebook cell markers to the script.")
     cells = _split_cells_by_markers(transformed.text)
-
-    return inject_matplotlib_inline(cells)
+    cells = inject_repo_root_setup(cells)
+    cells = inject_matplotlib_inline(cells)
+    return cells
 
 
 def script_to_code_cells(source: str) -> list[str]:
@@ -243,6 +245,62 @@ def inject_matplotlib_inline(cells: list[ScriptCell]) -> list[ScriptCell]:
     if insert_at < len(lines) and lines[insert_at].strip():
         to_insert.append("")
     for offset, line in enumerate(to_insert):
+        lines.insert(insert_at + offset, line)
+    cells[target_idx].code = "\n".join(lines).rstrip("\n") + "\n"
+    return cells
+
+
+def inject_repo_root_setup(cells: list[ScriptCell]) -> list[ScriptCell]:
+    """Inject a notebook-only repo-root setup snippet into the imports cell.
+
+    This keeps example scripts free to use repo-root-relative paths (e.g. `Path("data/...")`)
+    while making notebooks robust when launched from `examples/notebooks/` or any subdirectory.
+    """
+    if not cells:
+        return cells
+    if any(REPO_ROOT_SNIPPET_MARKER in cell.code for cell in cells):
+        return cells
+
+    target_idx = None
+    for i, cell in enumerate(cells):
+        try:
+            module = ast.parse(cell.code)
+        except SyntaxError:
+            continue
+        if any(isinstance(stmt, (ast.Import, ast.ImportFrom)) for stmt in module.body):
+            target_idx = i
+            break
+    if target_idx is None:
+        target_idx = 0
+
+    lines = cells[target_idx].code.splitlines()
+    insert_at = _import_block_end_line_index(cells[target_idx].code)
+
+    snippet_lines = [
+        "",
+        REPO_ROOT_SNIPPET_MARKER,
+        "import os",
+        "from pathlib import Path as _Path",
+        "",
+        "def _find_repo_root(start: _Path) -> _Path:",
+        '    for candidate in (start, *start.parents):',
+        '        if (',
+        '            (candidate / \"src\" / \"fouriax\").exists()',
+        '            and (candidate / \"README.md\").exists()',
+        "        ):",
+        "            return candidate",
+        "    raise FileNotFoundError(",
+        '        \"Could not locate repository root from current working directory. \"',
+        '        \"Expected to find src/fouriax and README.md in an ancestor.\"',
+        "    )",
+        "",
+        "REPO_ROOT = _find_repo_root(_Path.cwd())",
+        "if _Path.cwd() != REPO_ROOT:",
+        "    os.chdir(REPO_ROOT)",
+        "",
+    ]
+
+    for offset, line in enumerate(snippet_lines):
         lines.insert(insert_at + offset, line)
     cells[target_idx].code = "\n".join(lines).rstrip("\n") + "\n"
     return cells

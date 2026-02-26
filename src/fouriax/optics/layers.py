@@ -5,7 +5,7 @@ from typing import Literal
 
 import jax.numpy as jnp
 
-from fouriax.core.fft import fftconvolve, fftconvolve_same_with_otf
+from fouriax.fft import fftconvolve, fftconvolve_same_with_otf
 from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.model import Field
 

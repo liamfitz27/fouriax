@@ -1,6 +1,5 @@
 """Core optics data models."""
 
-from fouriax.example_utils.losses import focal_spot_loss
 from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
@@ -63,7 +62,6 @@ __all__ = [
     "IncoherentImager",
     "IntensitySensor",
     "FieldReadout",
-    "focal_spot_loss",
     "MetaAtomLibrary",
     "MetaAtomInterpolationLayer",
     "ASMPropagator",
