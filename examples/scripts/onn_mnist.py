@@ -13,7 +13,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from fouriax.example_utils import optimize_dataset_optical_module
 from fouriax.optics import (
     Field,
     Grid,
@@ -24,6 +23,7 @@ from fouriax.optics import (
     plan_propagation,
     plot_field_evolution,
 )
+from fouriax.optim import optimize_dataset_optical_module
 
 #%% Paths and Parameters
 MNIST_URL = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"

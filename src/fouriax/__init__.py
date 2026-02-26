@@ -1,6 +1,6 @@
 """fouriax package."""
 
-from fouriax.core.fft import fftconvolve
+from fouriax.fft import fftconvolve
 from fouriax.optics import (
     AmplitudeMask,
     ASMPropagator,
@@ -20,7 +20,6 @@ from fouriax.optics import (
     Spectrum,
     ThinLens,
     critical_distance_um,
-    focal_spot_loss,
     plan_propagation,
     plot_field_evolution,
     select_propagator_method,
@@ -43,7 +42,6 @@ __all__ = [
     "IncoherentImager",
     "IntensitySensor",
     "FieldReadout",
-    "focal_spot_loss",
     "ASMPropagator",
     "RSPropagator",
     "plan_propagation",

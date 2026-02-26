@@ -1,18 +1,18 @@
-"""Lightweight helper utilities used by example scripts and notebooks.
+"""Lightweight helper utilities for optimization in example scripts and notebooks.
 
 These are intentionally small wrappers around common NumPy/JAX/Optax patterns
 to reduce duplication in examples. They are not part of the core optics API.
 """
 
-from fouriax.example_utils.data import (
+from fouriax.optim.data import (
     batch_slices,
     iter_minibatches,
     random_batch_indices,
     shuffled_arrays,
     train_val_split,
 )
-from fouriax.example_utils.losses import focal_spot_loss
-from fouriax.example_utils.optim import (
+from fouriax.optim.losses import focal_spot_loss
+from fouriax.optim.optim import (
     BestValueTracker,
     DatasetOptResult,
     HybridModuleDatasetOptResult,

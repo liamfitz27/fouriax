@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from scipy import signal
 
-from fouriax.core.fft import fftconvolve
+from fouriax.fft import fftconvolve
 
 # TODO(next tests):
 # - Add broadcasting tests on non-convolution dimensions.

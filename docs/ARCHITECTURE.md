@@ -9,8 +9,8 @@ The optics package is organized around:
 - `Field` state representation (`model.py`)
 - composable `OpticalLayer` transforms (`interfaces.py`, `layers.py`, `propagation.py`)
 - readout `Sensor`s (`sensors.py`)
-- optics-domain field/layer/sensor primitives (with example-specific training utilities in
-  `src/fouriax/example_utils`)
+- optics-domain field/layer/sensor primitives (with optimization utilities in
+  `src/fouriax/optim`)
 
 All physical transforms are implemented as explicit layers. Domain transitions between spatial and k-space are explicit in layer stacks.
 
@@ -251,31 +251,30 @@ This keeps meta-atom support as a specialized layer built on top of the generic 
 
 ## FFT Utilities
 
-Implemented in `src/fouriax/core/fft.py`.
+Implemented in `src/fouriax/fft.py`.
 
 - `fftconvolve(...)`: generic FFT convolution
 - `fftconvolve_same_with_otf(...)`: same-mode linear convolution using a precomputed OTF
   (used by `IncoherentImager` OTF path)
 
-## Example Loss Utilities
+## Loss Utilities
 
-Implemented in `src/fouriax/example_utils/losses.py`:
+Implemented in `src/fouriax/optim/losses.py`:
 
 - `focal_spot_loss`
 
-`focal_spot_loss` is kept as an example-oriented optimization helper (and re-exported via
-`fouriax.optics` for compatibility with existing examples). Broader matrix-analysis/objective
-helpers are no longer part of the core optics package.
+`focal_spot_loss` is an optimization helper kept in the `optim` package alongside other
+training utilities. It is not part of the core optics API.
 
-## Example Optimization Utilities
+## Optimization Utilities
 
-Implemented in `src/fouriax/example_utils`.
+Implemented in `src/fouriax/optim`.
 
 These utilities are example-facing training helpers layered on top of JAX/Optax. They are
 intentionally outside the core optics API (`src/fouriax/optics`) and exist to reduce repeated
 optimization loop code in scripts/notebooks.
 
-### `example_utils/data.py`
+### `optim/data.py`
 
 Array-based batching and split helpers used by example training loops:
 
@@ -285,7 +284,7 @@ Array-based batching and split helpers used by example training loops:
 - `shuffled_arrays(...)`
 - `train_val_split(...)`
 
-### `example_utils/optim.py`
+### `optim/optim.py`
 
 Contains both low-level and high-level optimization wrappers:
 
@@ -344,3 +343,39 @@ Typical coherent stack with explicit domain transitions:
 5. optional sensor readout
 
 Propagation selection is explicit at construction/planning time through `plan_propagation(...)`, producing a concrete `OpticalLayer` used directly in `OpticalModule.layers`.
+
+## Analysis Utilities
+
+Implemented in `src/fouriax/analysis`.
+
+### `analysis/fisher.py`
+
+Fisher information computation with two tiers:
+
+**Closed-form FIM** for known noise models:
+
+- `jacobian_matrix(forward_fn, params)`: Jacobian `d(output)/d(params)`, pytree-aware via internal flatten
+- `fisher_information(forward_fn, params, noise_model=...)`: closed-form FIM
+  - Gaussian: `J^T diag(1/σ²) J`
+  - Poisson: `J^T diag(1/μ) J`
+- `cramer_rao_bound(fim)`: diagonal of FIM inverse (minimum variance per parameter)
+- `d_optimality(fim)`: log-determinant criterion for experimental design
+
+**Score-based Monte Carlo FIM** for general distributions:
+
+- `score_fisher_information(log_prob_fn, params, samples)`: general FIM via
+  `(1/N) Σᵢ ∇_θ log p(yᵢ|θ) ∇_θ log p(yᵢ|θ)^T`. Works with arbitrary differentiable
+  log-likelihoods.
+
+All functions accept arbitrary JAX pytrees as parameters.
+
+### `analysis/sensitivity.py`
+
+Design sensitivity and fabrication tolerance analysis:
+
+- `sensitivity_map(forward_fn, params)`: per-parameter L2 norm of the Jacobian column
+- `parameter_tolerance(forward_fn, params, target_change=...)`: allowable perturbation
+  per parameter for a given output change (linear approximation)
+
+Both return pytrees matching the input parameter structure.
+

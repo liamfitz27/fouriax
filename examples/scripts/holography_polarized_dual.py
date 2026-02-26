@@ -12,7 +12,6 @@ import numpy as np
 import optax
 from PIL import Image
 
-from fouriax.example_utils.optim import optimize_optical_module
 from fouriax.optics import (
     Field,
     Grid,
@@ -21,6 +20,7 @@ from fouriax.optics import (
     Spectrum,
     plan_propagation,
 )
+from fouriax.optim import optimize_optical_module
 
 #%% Paths and Parameters
 IMAGE_PATH = Path("/Users/liam/Downloads/logo.jpg")

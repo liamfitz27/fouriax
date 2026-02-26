@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from fouriax.example_utils.optim import optimize_optical_module
 from fouriax.optics import (
     Field,
     Grid,
@@ -22,6 +21,7 @@ from fouriax.optics import (
     Spectrum,
     plan_propagation,
 )
+from fouriax.optim import optimize_optical_module
 
 #%% Paths and Parameters
 NPZ_PATH = Path("../../data/meta_atoms/square_pillar_0p7um_cell_sweep_results.npz")

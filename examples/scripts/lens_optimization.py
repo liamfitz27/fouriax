@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from fouriax.example_utils.optim import optimize_optical_module
 from fouriax.optics import (
     AmplitudeMask,
     Field,
@@ -19,9 +18,9 @@ from fouriax.optics import (
     OpticalModule,
     PhaseMask,
     Spectrum,
-    focal_spot_loss,
     plan_propagation,
 )
+from fouriax.optim import focal_spot_loss, optimize_optical_module
 
 #%% Paths and Parameters
 ARTIFACTS_DIR = Path("artifacts")

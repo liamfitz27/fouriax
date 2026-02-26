@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import optax
 
-from fouriax.example_utils.data import iter_minibatches
+from fouriax.optim.data import iter_minibatches
 
 ParamsT = TypeVar("ParamsT")
 DecoderParamsT = TypeVar("DecoderParamsT")

@@ -10,9 +10,9 @@ from fouriax.optics import (
     OpticalModule,
     PhaseMask,
     Spectrum,
-    focal_spot_loss,
     plan_propagation,
 )
+from fouriax.optim import focal_spot_loss
 
 
 def _circular_aperture(grid: Grid, diameter_um: float) -> jnp.ndarray:

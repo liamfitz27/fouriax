@@ -11,7 +11,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from fouriax.example_utils import optimize_dataset_optical_module
 from fouriax.optics import (
     ComplexMask,
     Field,
@@ -22,6 +21,7 @@ from fouriax.optics import (
     ThinLens,
 )
 from fouriax.optics.propagation import ASMPropagator
+from fouriax.optim import optimize_dataset_optical_module
 
 #%% Paths and Parameters
 ARTIFACTS_DIR = Path("artifacts")
