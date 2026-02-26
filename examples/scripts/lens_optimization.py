@@ -1,16 +1,17 @@
-#!/usr/bin/env python3
-"""Simple end-to-end lens optimization example (script-first)."""
+"""Simple end-to-end lens optimization example."""
 
+#%% Imports
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
+from fouriax.example_utils.optim import optimize_optical_module
 from fouriax.optics import (
     AmplitudeMask,
     Field,
@@ -22,7 +23,22 @@ from fouriax.optics import (
     plan_propagation,
 )
 
+#%% Paths and Parameters
+ARTIFACTS_DIR = Path("artifacts")
+PLOT_PATH = ARTIFACTS_DIR / "lens_optimization_overview.png"
+SUMMARY_PATH = ARTIFACTS_DIR / "lens_opt_summary.json"
 
+SEED = 0
+GRID_N = 64
+GRID_DX_UM = 1.0
+WAVELENGTH_UM = 0.532
+DISTANCE_UM = 1000.0
+APERTURE_DIAMETER_UM = 48.0
+WINDOW_PX = 2
+LR = 0.05
+STEPS = 60
+
+#%% Helper functions
 def circular_aperture(grid: Grid, diameter_um: float) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     r2 = x * x + y * y
@@ -31,77 +47,62 @@ def circular_aperture(grid: Grid, diameter_um: float) -> jnp.ndarray:
 
 
 def main() -> None:
-    grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
-    spectrum = Spectrum.from_scalar(0.532)
+    #%% Setup
+    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
 
-    distance_um = 1000.0
-    aperture_diameter_um = 48.0
-    aperture = circular_aperture(grid, diameter_um=aperture_diameter_um)
+    aperture = circular_aperture(grid, diameter_um=APERTURE_DIAMETER_UM)
     target_xy = (grid.nx // 2, grid.ny // 2)
-    window_px = 2
-
     propagator = plan_propagation(
         mode="auto",
         grid=grid,
         spectrum=spectrum,
-        distance_um=distance_um,
+        distance_um=DISTANCE_UM,
     )
 
-    def loss_fn(raw_phase_map: jnp.ndarray) -> jnp.ndarray:
+    def build_module(raw_phase_map: jnp.ndarray) -> OpticalModule:
         phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase_map)
-        module = OpticalModule(
+        return OpticalModule(
             layers=(
                 PhaseMask(phase_map_rad=phase_limited[None, :, :]),
                 AmplitudeMask(amplitude_map=aperture[None, :, :]),
                 propagator,
             )
         )
+
+    #%% Loss Function and Optimization
+    def loss_fn(raw_phase_map: jnp.ndarray) -> jnp.ndarray:
+        module = build_module(raw_phase_map)
         intensity = module.forward(field_in).intensity()
         return focal_spot_loss(
             intensity=intensity,
             target_xy=target_xy,
-            window_px=window_px,
+            window_px=WINDOW_PX,
         )
 
-    key = jax.random.PRNGKey(0)
+    key = jax.random.PRNGKey(SEED)
     phase_map = 0.1 * jax.random.normal(key, (grid.ny, grid.nx))
 
-    lr = 0.05
-    steps = 60
-    optimizer = optax.adam(lr)
-    opt_state = optimizer.init(phase_map)
-    value_and_grad = jax.value_and_grad(loss_fn)
-
-    history: list[float] = []
-    for step in range(steps):
-        loss, grad = value_and_grad(phase_map)
-        updates, opt_state = optimizer.update(grad, opt_state, phase_map)
-        phase_map = optax.apply_updates(phase_map, updates)
-        history.append(float(loss))
-        if step % 20 == 0 or step == steps - 1:
-            print(f"step={step:03d} loss={float(loss):.6f}")
-
-    initial_loss = history[0]
-    final_loss = history[-1]
-
-    final_phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(phase_map)
-    final_module = OpticalModule(
-        layers=(
-            PhaseMask(phase_map_rad=final_phase_limited[None, :, :]),
-            AmplitudeMask(amplitude_map=aperture[None, :, :]),
-            propagator,
-        )
+    optimizer = optax.adam(LR)
+    result = optimize_optical_module(
+        init_params=phase_map,
+        build_module=build_module,
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        steps=STEPS,
+        log_every=20,
     )
-    final_intensity = np.asarray(final_module.forward(field_in).intensity())[0]
-    center_intensity = float(final_intensity[target_xy[1], target_xy[0]])
+    final_phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(result.best_params)
+    final_intensity = np.asarray(result.best_module.forward(field_in).intensity())[0]
     optimized_profile = final_intensity[target_xy[1], :]
 
+    #%% Evaluation
     x_um, y_um = grid.spatial_grid()
     wavelength_um = float(spectrum.wavelengths_um[0])
     k = 2.0 * jnp.pi / wavelength_um
     hyperbolic_phase = -k * (
-        jnp.sqrt(x_um * x_um + y_um * y_um + distance_um**2) - distance_um
+        jnp.sqrt(x_um * x_um + y_um * y_um + DISTANCE_UM**2) - DISTANCE_UM
     )
     reference_module = OpticalModule(
         layers=(
@@ -113,34 +114,11 @@ def main() -> None:
     reference_intensity = np.asarray(reference_module.forward(field_in).intensity())[0]
     reference_profile = reference_intensity[target_xy[1], :]
 
-    out_dir = Path("artifacts")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    summary = {
-        "steps": steps,
-        "optimizer": "optax_adam",
-        "learning_rate": lr,
-        "initial_loss": initial_loss,
-        "final_loss": final_loss,
-        "improvement": initial_loss - final_loss,
-        "target_xy": target_xy,
-        "window_px": window_px,
-        "center_intensity": center_intensity,
-    }
-    with (out_dir / "lens_opt_summary.json").open("w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-
-    print("saved:", out_dir / "lens_opt_summary.json")
-
-    try:
-        import matplotlib.pyplot as plt
-    except Exception:
-        return
-
-    optimized_phase = np.asarray(2.0 * jnp.pi * jax.nn.sigmoid(phase_map))
+    #%% Plot Results
+    optimized_phase = np.asarray(final_phase_limited)
     fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.0))
 
-    axes[0, 0].plot(history)
+    axes[0, 0].plot(result.history)
     axes[0, 0].set_title("Loss History")
     axes[0, 0].set_xlabel("Step")
     axes[0, 0].set_ylabel("Loss")
@@ -148,10 +126,14 @@ def main() -> None:
 
     phase_im = axes[0, 1].imshow(optimized_phase, cmap="twilight")
     axes[0, 1].set_title("Optimized Phase (rad)")
+    axes[0, 1].set_xticks([])
+    axes[0, 1].set_yticks([])
     plt.colorbar(phase_im, ax=axes[0, 1], fraction=0.046, pad=0.04)
 
     focus_im = axes[1, 0].imshow(final_intensity, cmap="inferno")
     axes[1, 0].set_title("Optimized 2D Focal Spot")
+    axes[1, 0].set_xticks([])
+    axes[1, 0].set_yticks([])
     plt.colorbar(focus_im, ax=axes[1, 0], fraction=0.046, pad=0.04)
 
     axes[1, 1].plot(optimized_profile, label="Optimized")
@@ -163,9 +145,9 @@ def main() -> None:
     axes[1, 1].legend()
 
     fig.tight_layout()
-    fig.savefig(out_dir / "lens_opt_overview.png", dpi=160)
-    print("saved:", out_dir / "lens_opt_overview.png")
+    fig.savefig(PLOT_PATH, dpi=150)
     plt.close(fig)
+    print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

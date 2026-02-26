@@ -9,7 +9,8 @@ The optics package is organized around:
 - `Field` state representation (`model.py`)
 - composable `OpticalLayer` transforms (`interfaces.py`, `layers.py`, `propagation.py`)
 - readout `Sensor`s (`sensors.py`)
-- objective and matrix-analysis utilities (`losses.py`)
+- optics-domain field/layer/sensor primitives (with example-specific training utilities in
+  `src/fouriax/example_utils`)
 
 All physical transforms are implemented as explicit layers. Domain transitions between spatial and k-space are explicit in layer stacks.
 
@@ -256,16 +257,81 @@ Implemented in `src/fouriax/core/fft.py`.
 - `fftconvolve_same_with_otf(...)`: same-mode linear convolution using a precomputed OTF
   (used by `IncoherentImager` OTF path)
 
-## Losses and Matrix Utilities
+## Example Loss Utilities
 
-Implemented in `losses.py`:
+Implemented in `src/fouriax/example_utils/losses.py`:
 
 - `focal_spot_loss`
-- DCT synthesis matrix helpers
-- sensing matrix construction
-- randomized SVD
-- coherence objectives
-- mutual-information objective
+
+`focal_spot_loss` is kept as an example-oriented optimization helper (and re-exported via
+`fouriax.optics` for compatibility with existing examples). Broader matrix-analysis/objective
+helpers are no longer part of the core optics package.
+
+## Example Optimization Utilities
+
+Implemented in `src/fouriax/example_utils`.
+
+These utilities are example-facing training helpers layered on top of JAX/Optax. They are
+intentionally outside the core optics API (`src/fouriax/optics`) and exist to reduce repeated
+optimization loop code in scripts/notebooks.
+
+### `example_utils/data.py`
+
+Array-based batching and split helpers used by example training loops:
+
+- `batch_slices(...)`
+- `iter_minibatches(...)`
+- `random_batch_indices(...)`
+- `shuffled_arrays(...)`
+- `train_val_split(...)`
+
+### `example_utils/optim.py`
+
+Contains both low-level and high-level optimization wrappers:
+
+- `optimize_optical_module(...)`
+  - single-loss, non-dataset Optax loop for optimizing one optical parameter pytree
+  - returns `ModuleOptResult`
+
+- `optimize_dataset_params(...)`
+  - generic minibatch optimizer engine with optional validation tracking
+  - used as the internal engine for higher-level wrappers
+  - supports arbitrary param pytrees and custom batch/eval functions
+
+- `optimize_dataset_optical_module(...)`
+  - simplified dataset wrapper for optics-only training
+  - caller provides:
+    - `build_module(params) -> OpticalModule`
+    - one shared `loss_fn(params, batch)`
+    - `train_data`, optional `val_data`, `batch_size`, `epochs`
+  - internal behavior:
+    - derives minibatching via `iter_minibatches(...)`
+    - computes validation as mean `val_loss` using the same `loss_fn`
+    - uses built-in uniform console reporting
+  - returns `ModuleDatasetOptResult`
+
+- `optimize_dataset_hybrid_module(...)`
+  - simplified dataset wrapper for joint optimization of optical parameters plus a decoder/NN
+  - separates parameters into `{"optical": ..., "decoder": ...}`
+  - supports either:
+    - a single combined `optimizer`, or
+    - separate `optical_optimizer` and `decoder_optimizer` (internally combined with
+      `optax.multi_transform(...)`)
+  - uses the same minibatching/validation/reporting conventions as
+    `optimize_dataset_optical_module(...)`
+  - returns `HybridModuleDatasetOptResult`
+
+Default dataset-wrapper reporting cadence (both simplified wrappers):
+
+- `val_every_epochs=1`
+- `val_every_steps=0`
+- `log_every_steps=0`
+
+Practical note for JIT-compiled optimization:
+
+- any propagation/planning decisions (for example, ASM vs RS selection) should be resolved at
+  module-construction time before entering the JIT-traced loss, so the traced path uses a fixed
+  concrete propagator layer.
 
 ## Execution Pattern
 

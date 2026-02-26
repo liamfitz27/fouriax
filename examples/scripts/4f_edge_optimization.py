@@ -1,8 +1,8 @@
 """Optimize a phase-only Fourier-plane filter for edge detection in a 4f system."""
 
+#%% Imports
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import jax
@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
+from fouriax.example_utils import optimize_dataset_optical_module
 from fouriax.optics import (
     ComplexMask,
     Field,
@@ -22,24 +23,23 @@ from fouriax.optics import (
 )
 from fouriax.optics.propagation import ASMPropagator
 
+#%% Paths and Parameters
 ARTIFACTS_DIR = Path("artifacts")
-PLOT_PATH = ARTIFACTS_DIR / "4f_edge_optimization_example.png"
+PLOT_PATH = ARTIFACTS_DIR / "4f_edge_optimization.png"
+SUMMARY_PATH = ARTIFACTS_DIR / "4f_edge_optimization_summary.json"
 
+SEED = 0
 WAVELENGTH_UM = 0.532
 N_MEDIUM = 1.0
 GRID_N = 128
 GRID_DX_UM = 2.0
-STEPS = 1000
-LR = 1e-1
+EPOCHS = 25
+LR = 5e-3
 N_TRAIN_SCENES = 1000
 N_TEST_SCENES = 100
 
-
-def _sampling_matched_f(grid: Grid) -> float:
-    return N_MEDIUM * grid.nx * grid.dx_um**2 / WAVELENGTH_UM
-
-
-def _random_scene(key: jax.Array, grid: Grid) -> jnp.ndarray:
+#%% Helper Functions
+def random_scene(key: jax.Array, grid: Grid) -> jnp.ndarray:
     noise = jax.random.normal(key, grid.shape)
     k = jnp.fft.fftn(noise, axes=(-2, -1))
     fx, fy = grid.frequency_grid()
@@ -49,7 +49,7 @@ def _random_scene(key: jax.Array, grid: Grid) -> jnp.ndarray:
     return (smooth > 0).astype(jnp.float32)
 
 
-def _edge_target(scene: jnp.ndarray) -> jnp.ndarray:
+def edge_target(scene: jnp.ndarray) -> jnp.ndarray:
     padded = jnp.pad(scene, 1, mode="edge")
     gx = padded[1:-1, 2:] - padded[1:-1, :-2]
     gy = padded[2:, 1:-1] - padded[:-2, 1:-1]
@@ -57,12 +57,16 @@ def _edge_target(scene: jnp.ndarray) -> jnp.ndarray:
     return mag / jnp.maximum(jnp.max(mag), 1e-12)
 
 
-def _analytical_spiral_phase(grid: Grid) -> jnp.ndarray:
+def sampling_matched_f(grid: Grid) -> float:
+    return N_MEDIUM * grid.nx * grid.dx_um**2 / WAVELENGTH_UM
+
+
+def analytical_spiral_phase(grid: Grid) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     return jnp.arctan2(y, x) + jnp.pi  # [0, 2π], centered on optical axis
 
 
-def _make_test_scene(grid: Grid) -> jnp.ndarray:
+def make_test_scene(grid: Grid) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     half = grid.nx * grid.dx_um / 2.0
     scene = jnp.zeros(grid.shape, dtype=jnp.float32)
@@ -75,94 +79,111 @@ def _make_test_scene(grid: Grid) -> jnp.ndarray:
     return jnp.clip(scene, 0.0, 1.0)
 
 
-def _apply_4f(
-    phase: jnp.ndarray,
+def measure_scene(
+    module: OpticalModule,
     scene: jnp.ndarray,
     grid: Grid,
     spectrum: Spectrum,
-    prop: ASMPropagator,
-    lens: ThinLens,
 ) -> jnp.ndarray:
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(
         scene[None, :, :],
-    )
-    module = OpticalModule(
-        layers=(
-            prop, lens, prop,
-            ComplexMask(phase_map_rad=phase),
-            prop, lens, prop,
-        ),
-        sensor=IntensitySensor(sum_wavelengths=True),
     )
     return module.measure(field_in)[::-1, ::-1]
 
 
 def main() -> None:
+    #%% Setup
     grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
     spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
-    f_um = _sampling_matched_f(grid)
+    f_um = sampling_matched_f(grid)
 
     prop = ASMPropagator(
         distance_um=f_um, use_sampling_planner=False, warn_on_regime_mismatch=False,
     )
     lens = ThinLens(focal_length_um=f_um)
 
-    # Pre-generate fixed training and test scenes.
-    key = jax.random.PRNGKey(42)
+    def build_module(raw_phase: jnp.ndarray) -> OpticalModule:
+        phase = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase)
+        return OpticalModule(
+            layers=(
+                prop, lens, prop,
+                ComplexMask(phase_map_rad=phase),
+                prop, lens, prop,
+            ),
+            sensor=IntensitySensor(sum_wavelengths=True),
+        )
+
+    #%% Training Data
+    key = jax.random.PRNGKey(SEED)
     key, *train_keys = jax.random.split(key, N_TRAIN_SCENES + 1)
-    train_scenes = jnp.stack([_random_scene(k, grid) for k in train_keys])
-    train_targets = jnp.stack([_edge_target(s) for s in train_scenes])
+    train_scenes = jnp.stack([random_scene(k, grid) for k in train_keys])
+    train_targets = jnp.stack([edge_target(s) for s in train_scenes])
     key, *test_keys = jax.random.split(key, N_TEST_SCENES + 1)
-    test_scenes = jnp.stack([_random_scene(k, grid) for k in test_keys])
-    test_targets = jnp.stack([_edge_target(s) for s in test_scenes])
+    test_scenes = jnp.stack([random_scene(k, grid) for k in test_keys])
+    test_targets = jnp.stack([edge_target(s) for s in test_scenes])
 
-    def loss_fn(raw_phase: jnp.ndarray, scene: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
-        phase = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase)
-        out = _apply_4f(phase, scene, grid, spectrum, prop, lens)
-        out_n = out / jnp.maximum(jnp.max(out), 1e-12)
-        return jnp.mean((out_n - target) ** 2)
+    fig, axes = plt.subplots(2, 4, figsize=(16, 7))
+    for col in range(4):
+        axes[0, col].imshow(np.asarray(train_scenes[col]), cmap="gray")
+        axes[0, col].set_title(f"Scene {col}")
+        axes[1, col].imshow(np.asarray(train_targets[col]), cmap="hot")
+        axes[1, col].set_title(f"Edges {col}")
+    for ax in axes.flat:
+        ax.set_xlabel("x pixel")
+        ax.set_ylabel("y pixel")
+    fig.tight_layout()
+    save_path = ARTIFACTS_DIR / "4f_edge_optimization_scenes.png"
+    fig.savefig(save_path)
+    plt.close(fig)
 
-    @jax.jit
-    def eval_loss(raw_phase: jnp.ndarray, scene: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
-        phase = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase)
-        out = _apply_4f(phase, scene, grid, spectrum, prop, lens)
-        out_n = out / jnp.maximum(jnp.max(out), 1e-12)
-        return jnp.mean((out_n - target) ** 2)
-
+    #%% Loss Function and Optimization
     key, init_key = jax.random.split(key)
     raw_phase = 0.1 * jax.random.normal(init_key, (grid.ny, grid.nx))
     optimizer = optax.adam(LR)
-    opt_state = optimizer.init(raw_phase)
-    vg = jax.jit(jax.value_and_grad(loss_fn))
 
     n_test_eval = min(10, N_TEST_SCENES)  # evaluate on a subset for speed
-    train_history: list[float] = []
-    test_history: list[tuple[int, float]] = []
-    for step in range(STEPS):
-        scene_idx = step % N_TRAIN_SCENES
-        loss, grad = vg(raw_phase, train_scenes[scene_idx], train_targets[scene_idx])
-        updates, opt_state = optimizer.update(grad, opt_state, raw_phase)
-        raw_phase = optax.apply_updates(raw_phase, updates)
-        train_history.append(float(loss))
-        if step % 50 == 0 or step == STEPS - 1:
-            test_losses = [float(eval_loss(raw_phase, test_scenes[i], test_targets[i]))
-                           for i in range(n_test_eval)]
-            test_loss = float(np.mean(test_losses))
-            test_history.append((step, test_loss))
-            print(f"step={step:03d}  train={float(loss):.6f}  test={test_loss:.6f}")
+    val_data = (test_scenes[:n_test_eval], test_targets[:n_test_eval])
+    
+    def loss_fn(
+        params: jnp.ndarray,
+        batch: tuple[jnp.ndarray, jnp.ndarray],
+    ) -> jnp.ndarray:
+        scenes, targets = batch
+        scene = scenes[0]
+        target = targets[0]
+        module = build_module(params)
+        out = measure_scene(module, scene, grid, spectrum)
+        out_n = out / jnp.maximum(jnp.max(out), 1e-12)
+        return jnp.mean((out_n - target) ** 2)
 
-    # Evaluate on held-out structured test scene.
-    final_phase = np.asarray(2.0 * jnp.pi * jax.nn.sigmoid(raw_phase))
-    test_scene = _make_test_scene(grid)
-    test_target = _edge_target(test_scene)
-    test_out = np.asarray(_apply_4f(final_phase, test_scene, grid, spectrum, prop, lens))
+    result = optimize_dataset_optical_module(
+        init_params=raw_phase,
+        build_module=build_module,
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        train_data=(train_scenes, train_targets),
+        batch_size=1,
+        epochs=EPOCHS,
+        val_data=val_data,
+        seed=SEED,
+    )
+    train_history = result.params_result.train_loss_history
+    test_history = [
+        (record.step, record.metrics["val_loss"]) for record in result.params_result.val_history
+    ]
+
+    #%% Evaluation
+    final_phase = np.asarray(2.0 * jnp.pi * jax.nn.sigmoid(result.params_result.best_params))
+    test_scene = make_test_scene(grid)
+    test_target = edge_target(test_scene)
+    test_out = np.asarray(measure_scene(result.best_module, test_scene, grid, spectrum))
     test_out_n = test_out / np.max(test_out)
     cc = float(np.corrcoef(test_out_n.ravel(), np.asarray(test_target).ravel())[0, 1])
     print(f"Test-scene correlation: {cc:.4f}")
 
-    spiral = np.asarray(_analytical_spiral_phase(grid))
+    spiral = np.asarray(analytical_spiral_phase(grid))
 
-    # --- plot ---
+    #%% Plot Results
     fig, axes = plt.subplots(2, 3, figsize=(14, 8))
 
     axes[0, 0].imshow(np.asarray(test_scene), cmap="gray")
@@ -187,35 +208,21 @@ def main() -> None:
     test_steps, test_vals = zip(*test_history, strict=True)
     axes[1, 2].plot(test_steps, test_vals, "o-", markersize=3, label="Test (mean)")
     axes[1, 2].set_title("Loss history")
-    axes[1, 2].set_xlabel("Step")
+    axes[1, 2].set_xlabel("Epoch")
     axes[1, 2].set_ylabel("MSE")
     axes[1, 2].legend(fontsize=8)
     axes[1, 2].grid(alpha=0.3)
 
     for ax in axes.flat:
         if ax.images:
-            ax.set_xlabel("x pixel")
-            ax.set_ylabel("y pixel")
+            ax.set_xticks([])
+            ax.set_yticks([])
 
     fig.tight_layout()
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(PLOT_PATH, dpi=150)
-    print(f"Saved: {PLOT_PATH}")
-
-    summary = {
-        "steps": STEPS,
-        "learning_rate": LR,
-        "n_train_scenes": N_TRAIN_SCENES,
-        "n_test_scenes": N_TEST_SCENES,
-        "initial_train_loss": train_history[0],
-        "final_train_loss": train_history[-1],
-        "final_test_loss": test_history[-1][1],
-        "test_correlation": cc,
-        "grid_n": GRID_N,
-        "f_um": f_um,
-    }
-    with (ARTIFACTS_DIR / "4f_edge_optimization_summary.json").open("w") as f:
-        json.dump(summary, f, indent=2)
+    plt.close(fig)
+    print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

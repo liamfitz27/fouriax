@@ -5,6 +5,7 @@ filter H = F*{target} at the Fourier plane.  Compares the physical
 output to a direct FFT cross-correlation as ground truth.
 """
 
+#%% Imports
 from __future__ import annotations
 
 from pathlib import Path
@@ -21,25 +22,50 @@ from fouriax.optics import (
     OpticalModule,
     Spectrum,
     ThinLens,
+    plan_propagation,
 )
-from fouriax.optics.propagation import ASMPropagator
 
+#%% Paths and Parameters
 ARTIFACTS_DIR = Path("artifacts")
-PLOT_PATH = ARTIFACTS_DIR / "4f_correlator_example.png"
+PLOT_PATH = ARTIFACTS_DIR / "4f_correlator.png"
 
 WAVELENGTH_UM = 0.532
 N_MEDIUM = 1.0
 GRID_N = 128
 GRID_DX_UM = 2.0
 
+#%% Helper Functions
+def _raw_correlate(scene: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
+    """Ground-truth cross-correlation intensity via direct FFT."""
+    f_scene = jnp.fft.fftn(jnp.fft.ifftshift(scene), axes=(-2, -1))
+    f_target = jnp.fft.fftn(jnp.fft.ifftshift(target), axes=(-2, -1))
+    corr = jnp.fft.ifftn(f_scene * jnp.conj(f_target), axes=(-2, -1))
+    return jnp.abs(jnp.fft.fftshift(corr)) ** 2
 
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 
 def _sampling_matched_focal_length(grid: Grid) -> float:
     """f = n·N·dx² / λ"""
     return N_MEDIUM * grid.nx * grid.dx_um**2 / WAVELENGTH_UM
+
+
+def _matched_filter(target: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """Fourier-plane matched filter: (amplitude, phase_rad).
+
+    Built in the centred (fftshift) convention to match the physical
+    Fourier plane, where DC sits at the optical axis.
+    """
+    ft = jnp.fft.fftshift(
+        jnp.fft.fftn(jnp.fft.ifftshift(target), axes=(-2, -1)),
+        axes=(-2, -1),
+    )
+    amplitude = jnp.abs(ft) / jnp.max(jnp.abs(ft))
+    phase_rad = -jnp.angle(ft)
+    return amplitude, phase_rad
+
+
+def _paraxial_validity_constraint_fom() -> float:
+    """Dimensionless paraxial figure-of-merit (r_max / f)^2 for this grid pitch."""
+    return (WAVELENGTH_UM / (2 * N_MEDIUM * GRID_DX_UM)) ** 2
 
 
 def _make_rect(grid: Grid, cx_f: float, cy_f: float, w_f: float, h_f: float) -> jnp.ndarray:
@@ -65,53 +91,28 @@ def _build_target(grid: Grid) -> jnp.ndarray:
     return _make_rect(grid, 0.0, 0.0, 0.10, 0.10)
 
 
-def _matched_filter(target: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
-    """Fourier-plane matched filter: (amplitude, phase_rad).
-
-    Built in the centred (fftshift) convention to match the physical
-    Fourier plane, where DC sits at the optical axis.
-    """
-    ft = jnp.fft.fftshift(
-        jnp.fft.fftn(jnp.fft.ifftshift(target), axes=(-2, -1)),
-        axes=(-2, -1),
-    )
-    amplitude = jnp.abs(ft) / jnp.max(jnp.abs(ft))
-    phase_rad = -jnp.angle(ft)
-    return amplitude, phase_rad
-
-
-def _raw_correlate(scene: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
-    """Ground-truth cross-correlation intensity via direct FFT."""
-    f_scene = jnp.fft.fftn(jnp.fft.ifftshift(scene), axes=(-2, -1))
-    f_target = jnp.fft.fftn(jnp.fft.ifftshift(target), axes=(-2, -1))
-    corr = jnp.fft.ifftn(f_scene * jnp.conj(f_target), axes=(-2, -1))
-    return jnp.abs(jnp.fft.fftshift(corr)) ** 2
-
-
-# ---------------------------------------------------------------------------
-# main
-# ---------------------------------------------------------------------------
-
 def main() -> None:
+    #%% Setup
     grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
     spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
     f_um = _sampling_matched_focal_length(grid)
     print(f"f = {f_um:.1f} µm  |  (r_max/f)² = "
-          f"{(WAVELENGTH_UM / (2 * N_MEDIUM * GRID_DX_UM))**2:.4f}")
+          f"{_paraxial_validity_constraint_fom():.4f}")
 
     scene = _build_scene(grid)
     target = _build_target(grid)
     field_in = Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(scene[None, :, :])
 
-    # matched filter
     amp, phase = _matched_filter(target)
 
-    # optics — no sampling planner so the grid stays matched to f
-    prop = ASMPropagator(distance_um=f_um, use_sampling_planner=True,
-                         warn_on_regime_mismatch=False)
+    prop = plan_propagation(
+        mode="auto",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=f_um,
+    )
     lens = ThinLens(focal_length_um=f_um)
 
-    # proper 4f: prop(f) → Lens → prop(f) → filter → prop(f) → Lens → prop(f)
     correlator = OpticalModule(
         layers=(
             prop, lens, prop,
@@ -121,19 +122,17 @@ def main() -> None:
         sensor=IntensitySensor(sum_wavelengths=True),
     )
 
+    #%% Evaluation
     output_4f = np.asarray(correlator.measure(field_in))
     output_raw = np.asarray(_raw_correlate(scene, target))
 
-    # double FT ≡ spatial inversion — flip so peaks align with ground truth
     output_4f = output_4f[::-1, ::-1]
-
-    # normalise for comparison
     norm = lambda x: x / np.max(x) if np.max(x) > 0 else x  # noqa: E731
     out_4f_n, out_raw_n = norm(output_4f), norm(output_raw)
     cc = float(np.corrcoef(out_4f_n.ravel(), out_raw_n.ravel())[0, 1])
     print(f"Correlation with ground truth: {cc:.4f}")
 
-    # --- plot ---
+    #%% Plot Results
     fig, axes = plt.subplots(1, 4, figsize=(18, 4))
     axes[0].imshow(np.asarray(scene), cmap="gray")
     axes[0].set_title("Input scene")
@@ -151,13 +150,14 @@ def main() -> None:
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
     for ax in axes:
-        ax.set_xlabel("x pixel")
-        ax.set_ylabel("y pixel")
+        ax.set_xticks([])
+        ax.set_yticks([])
     fig.tight_layout()
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(PLOT_PATH, dpi=150)
-    print(f"Saved: {PLOT_PATH}")
+    plt.close(fig)
+    print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":
