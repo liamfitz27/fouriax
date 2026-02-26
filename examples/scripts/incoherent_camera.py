@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
 """Incoherent camera imaging example using IncoherentImager."""
 
+#%% Imports
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
 
 from fouriax.optics import (
@@ -20,11 +20,18 @@ from fouriax.optics import (
     ThinLens,
 )
 
+#%% Paths and Parameters
 ARTIFACTS_DIR = Path("artifacts")
-FIG_PATH = ARTIFACTS_DIR / "incoherent_camera_example.png"
-METRICS_PATH = ARTIFACTS_DIR / "incoherent_camera_metrics.json"
+PLOT_PATH = ARTIFACTS_DIR / "incoherent_camera.png"
 
+WAVELENGTH_UM = 0.532
+GRID_N = 192
+GRID_DX_UM = 1.0
+FOCAL_LENGTH_UM = 900.0
+APERTURE_DIAMETER_UM = 90.0
+SENSOR_SIZE_PX = 96
 
+#%% Helper Functions
 def _make_object_intensity(grid: Grid) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     r = jnp.sqrt(x * x + y * y)
@@ -43,15 +50,13 @@ def _center_crop(image: np.ndarray, size_px: int) -> np.ndarray:
 
 
 def main() -> None:
-    grid = Grid.from_extent(nx=192, ny=192, dx_um=1.0, dy_um=1.0)
-    spectrum = Spectrum.from_scalar(0.532)
+    #%% Setup
+    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
 
-    focal_length_um = 900.0
-    aperture_diameter_um = 90.0
-    lens_na = aperture_diameter_um / (2.0 * focal_length_um)
-    sensor_size_px = 96
-    sensor_width_um = sensor_size_px * grid.dx_um
-    hfov_deg = float(np.degrees(np.arctan((sensor_width_um * 0.5) / focal_length_um)))
+    lens_na = APERTURE_DIAMETER_UM / (2.0 * FOCAL_LENGTH_UM)
+    sensor_width_um = SENSOR_SIZE_PX * grid.dx_um
+    hfov_deg = float(np.degrees(np.arctan((sensor_width_um * 0.5) / FOCAL_LENGTH_UM)))
     fov_deg = 2.0 * hfov_deg
 
     object_intensity = _make_object_intensity(grid)
@@ -60,8 +65,8 @@ def main() -> None:
     )
 
     lens = ThinLens(
-        focal_length_um=focal_length_um,
-        aperture_diameter_um=aperture_diameter_um,
+        focal_length_um=FOCAL_LENGTH_UM,
+        aperture_diameter_um=APERTURE_DIAMETER_UM,
     )
     rs = RSPropagator(
         use_sampling_planner=True,
@@ -73,7 +78,7 @@ def main() -> None:
     imager_psf = IncoherentImager(
         optical_layer=lens,
         propagator=rs,
-        distance_um=focal_length_um,
+        distance_um=FOCAL_LENGTH_UM,
         psf_source="plane_wave_focus",
         normalize_psf=True,
         mode="psf",
@@ -81,7 +86,7 @@ def main() -> None:
     imager_otf = IncoherentImager(
         optical_layer=lens,
         propagator=rs,
-        distance_um=focal_length_um,
+        distance_um=FOCAL_LENGTH_UM,
         psf_source="plane_wave_focus",
         normalize_psf=True,
         mode="otf",
@@ -90,44 +95,25 @@ def main() -> None:
     module_psf = OpticalModule(layers=(imager_psf,), sensor=IntensitySensor(sum_wavelengths=True))
     module_otf = OpticalModule(layers=(imager_otf,), sensor=IntensitySensor(sum_wavelengths=True))
 
+    #%% Evaluation
     image_psf = np.asarray(module_psf.measure(field_in))
     image_otf = np.asarray(module_otf.measure(field_in))
-    crop_psf = _center_crop(image_psf, size_px=sensor_size_px)
-    crop_otf = _center_crop(image_otf, size_px=sensor_size_px)
+    crop_psf = _center_crop(image_psf, size_px=SENSOR_SIZE_PX)
+    crop_otf = _center_crop(image_otf, size_px=SENSOR_SIZE_PX)
 
     parity_mse_full = float(np.mean((image_psf - image_otf) ** 2))
     parity_mse_crop = float(np.mean((crop_psf - crop_otf) ** 2))
     print("=== Incoherent Camera Example ===")
-    print(f"focal_length_um={focal_length_um:.1f}")
-    print(f"aperture_diameter_um={aperture_diameter_um:.1f}")
+    print(f"focal_length_um={FOCAL_LENGTH_UM:.1f}")
+    print(f"aperture_diameter_um={APERTURE_DIAMETER_UM:.1f}")
     print(f"effective_na={lens_na:.4f}")
-    print(f"sensor_size_px={sensor_size_px} (from full grid {grid.nx}x{grid.ny})")
+    print(f"sensor_size_px={SENSOR_SIZE_PX} (from full grid {grid.nx}x{grid.ny})")
     print(f"half_fov_deg={hfov_deg:.3f}, fov_deg={fov_deg:.3f}")
     print(f"PSF/OTF parity MSE (full)={parity_mse_full:.3e}")
     print(f"PSF/OTF parity MSE (crop)={parity_mse_crop:.3e}")
 
+    #%% Plot Results
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    metrics = {
-        "grid": {"nx": grid.nx, "ny": grid.ny, "dx_um": grid.dx_um, "dy_um": grid.dy_um},
-        "wavelength_um": float(spectrum.wavelengths_um[0]),
-        "focal_length_um": focal_length_um,
-        "aperture_diameter_um": aperture_diameter_um,
-        "effective_na": lens_na,
-        "sensor_size_px": sensor_size_px,
-        "sensor_width_um": sensor_width_um,
-        "half_fov_deg": hfov_deg,
-        "fov_deg": fov_deg,
-        "parity_mse_full": parity_mse_full,
-        "parity_mse_crop": parity_mse_crop,
-    }
-    with METRICS_PATH.open("w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
-    print(f"saved: {METRICS_PATH}")
-
-    try:
-        import matplotlib.pyplot as plt
-    except Exception:
-        return
 
     psf = np.asarray(imager_psf.build_psf(field_in))[0]
     psf = psf / (np.max(psf) + 1e-12)
@@ -147,28 +133,12 @@ def main() -> None:
     ax[5].imshow(crop_psf, cmap="magma")
     ax[5].set_title("Sensor ROI Crop")
     for a in ax:
-        a.set_xlabel("x pixel")
-        a.set_ylabel("y pixel")
+        a.set_xticks([])
+        a.set_yticks([])
     fig.suptitle("Incoherent Camera Imaging (IncoherentImager)", fontsize=14, y=0.99)
-    fig.text(
-        0.5,
-        0.01,
-        (
-            f"lambda={float(spectrum.wavelengths_um[0]):.3f} um | "
-            f"f={focal_length_um:.1f} um | "
-            f"D={aperture_diameter_um:.1f} um | "
-            f"NA={lens_na:.4f} | "
-            f"HFOV={hfov_deg:.3f} deg | FOV={fov_deg:.3f} deg | "
-            f"sensor={sensor_size_px}px ({sensor_width_um:.1f} um)"
-        ),
-        ha="center",
-        va="bottom",
-        fontsize=10,
-        bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "alpha": 0.8},
-    )
-    fig.savefig(FIG_PATH, dpi=150)
-    print(f"saved: {FIG_PATH}")
+    fig.savefig(PLOT_PATH, dpi=150)
     plt.close(fig)
+    print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

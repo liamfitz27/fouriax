@@ -7,3 +7,4 @@ __pycache__/
 artifacts/
 *.egg-info/
 src/*.egg-info/
+.vscode/

@@ -583,26 +583,67 @@ def plan_propagation(
             refractive_index=refractive_index,
             na_limit=na_limit,
         )
-    if mode == "asm":
-        return ASMPropagator(
-            distance_um=distance_um,
-            use_sampling_planner=use_sampling_planner,
+
+    def _planned_grid() -> Grid | None:
+        if input_domain == "kspace":
+            return None
+        if precomputed_grid is not None:
+            return precomputed_grid
+        if not use_sampling_planner:
+            return None
+        return recommend_nyquist_grid(
+            grid=grid,
+            spectrum=spectrum,
             nyquist_factor=nyquist_factor,
             min_padding_factor=min_padding_factor,
-            precomputed_grid=precomputed_grid,
-            warn_on_regime_mismatch=warn_on_regime_mismatch,
+        )
+
+    planned_grid = _planned_grid()
+    selection_grid = planned_grid or grid
+
+    def _warn_if_explicit_mode_mismatch(explicit_mode: Literal["asm", "rs"]) -> None:
+        if not warn_on_regime_mismatch or input_domain == "kspace":
+            return
+        recommended = select_propagator_method(
+            grid=selection_grid,
+            spectrum=spectrum,
+            distance_um=distance_um,
+            equality_tolerance=equality_tolerance,
+        )
+        if recommended == explicit_mode:
+            return
+        z_crit = critical_distance_um(grid=selection_grid, spectrum=spectrum)
+        warnings.warn(
+            f"{explicit_mode.upper()} selected outside recommended regime "
+            f"(distance_um={distance_um:.3f}, z_crit_um={z_crit:.3f}, "
+            f"recommended='{recommended}'). Planning will continue with "
+            f"{explicit_mode.upper()} as requested.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    if mode == "asm":
+        _warn_if_explicit_mode_mismatch("asm")
+        return ASMPropagator(
+            distance_um=distance_um,
+            use_sampling_planner=False,
+            nyquist_factor=nyquist_factor,
+            min_padding_factor=min_padding_factor,
+            precomputed_grid=planned_grid,
+            warn_on_regime_mismatch=False,
             equality_tolerance=equality_tolerance,
             medium_index=medium_index,
             na_limit=na_limit,
         )
     if mode == "rs":
+        _warn_if_explicit_mode_mismatch("rs")
         return RSPropagator(
             distance_um=distance_um,
-            use_sampling_planner=use_sampling_planner,
+            use_sampling_planner=False,
             nyquist_factor=nyquist_factor,
             min_padding_factor=min_padding_factor,
-            precomputed_grid=precomputed_grid,
-            warn_on_regime_mismatch=warn_on_regime_mismatch,
+            precomputed_grid=planned_grid,
+            warn_on_regime_mismatch=False,
             equality_tolerance=equality_tolerance,
             medium_index=medium_index,
             na_limit=na_limit,
@@ -618,7 +659,7 @@ def plan_propagation(
     method = cast(
         Literal["asm", "rs"],
         select_propagator_method(
-            grid=grid,
+            grid=selection_grid,
             spectrum=spectrum,
             distance_um=distance_um,
             equality_tolerance=equality_tolerance,
@@ -627,22 +668,22 @@ def plan_propagation(
     if method == "asm":
         return ASMPropagator(
             distance_um=distance_um,
-            use_sampling_planner=use_sampling_planner,
+            use_sampling_planner=False,
             nyquist_factor=nyquist_factor,
             min_padding_factor=min_padding_factor,
-            precomputed_grid=precomputed_grid,
-            warn_on_regime_mismatch=warn_on_regime_mismatch,
+            precomputed_grid=planned_grid,
+            warn_on_regime_mismatch=False,
             equality_tolerance=equality_tolerance,
             medium_index=medium_index,
             na_limit=na_limit,
         )
     return RSPropagator(
         distance_um=distance_um,
-        use_sampling_planner=use_sampling_planner,
+        use_sampling_planner=False,
         nyquist_factor=nyquist_factor,
         min_padding_factor=min_padding_factor,
-        precomputed_grid=precomputed_grid,
-        warn_on_regime_mismatch=warn_on_regime_mismatch,
+        precomputed_grid=planned_grid,
+        warn_on_regime_mismatch=False,
         equality_tolerance=equality_tolerance,
         medium_index=medium_index,
         na_limit=na_limit,

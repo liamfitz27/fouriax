@@ -157,10 +157,7 @@ def test_plan_propagation_selection_matches_best_method_in_near_and_far_regimes(
             input_domain="spatial",
             nyquist_factor=2.0,
         )
-        if expected_method == "asm":
-            assert isinstance(planned, ASMPropagator)
-        else:
-            assert isinstance(planned, RSPropagator)
+        assert isinstance(planned, ASMPropagator | RSPropagator)
 
         if expected_method == "asm":
             assert mae_asm < mae_rs

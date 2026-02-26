@@ -1,5 +1,6 @@
 """Core optics data models."""
 
+from fouriax.example_utils.losses import focal_spot_loss
 from fouriax.optics.interfaces import OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
@@ -15,16 +16,6 @@ from fouriax.optics.layers import (
     OpticalModule,
     PhaseMask,
     ThinLens,
-)
-from fouriax.optics.losses import (
-    build_full_sensing_matrix_dct,
-    dct_basis_synthesis_matrix_2d,
-    focal_spot_loss,
-    mutual_information_loss,
-    mutual_information_loss_from_matrix,
-    randomized_svd,
-    total_coherence_loss,
-    total_coherence_loss_from_matrix,
 )
 from fouriax.optics.meta_atoms import MetaAtomInterpolationLayer, MetaAtomLibrary
 from fouriax.optics.model import Field, Grid, Spectrum
@@ -73,13 +64,6 @@ __all__ = [
     "IntensitySensor",
     "FieldReadout",
     "focal_spot_loss",
-    "dct_basis_synthesis_matrix_2d",
-    "build_full_sensing_matrix_dct",
-    "randomized_svd",
-    "total_coherence_loss",
-    "total_coherence_loss_from_matrix",
-    "mutual_information_loss",
-    "mutual_information_loss_from_matrix",
     "MetaAtomLibrary",
     "MetaAtomInterpolationLayer",
     "ASMPropagator",
