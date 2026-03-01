@@ -140,27 +140,25 @@ def main() -> None:
     )
 
     #%% Loss Function and Optimization
-    def logits_single(raw_params: jnp.ndarray, image_2d: jnp.ndarray) -> jnp.ndarray:
+    def logits_batch(raw_params: jnp.ndarray, images_3d: jnp.ndarray) -> jnp.ndarray:
         module = build_module(raw_params)
         field = Field(
-            data=image_2d[None, :, :].astype(jnp.complex64),
+            data=images_3d[:, None, :, :].astype(jnp.complex64),
             grid=work_grid,
             spectrum=spectrum,
         )
-        return module.measure(field).reshape(-1)
+        return module.measure(field).reshape((images_3d.shape[0], -1))
 
-    logits_batch = jax.vmap(logits_single, in_axes=(None, 0))
-
-    def sample_loss_fn(
+    def batch_loss_fn(
         params: jnp.ndarray,
-        sample: tuple[np.ndarray, np.ndarray] | tuple[jnp.ndarray, jnp.ndarray],
+        batch: tuple[np.ndarray, np.ndarray] | tuple[jnp.ndarray, jnp.ndarray],
     ) -> jnp.ndarray:
-        image_raw, label_raw = sample
-        image = jnp.asarray(image_raw, dtype=jnp.float32)
-        label = jnp.asarray(label_raw, dtype=jnp.int32)
-        logits = logits_single(params, image)
-        log_probs = logits - jax.scipy.special.logsumexp(logits, axis=0)
-        return -log_probs[label]
+        image_raw, label_raw = batch
+        images = jnp.asarray(image_raw, dtype=jnp.float32)
+        labels = jnp.asarray(label_raw, dtype=jnp.int32)
+        logits = logits_batch(params, images)
+        log_probs = logits - jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
+        return -jnp.mean(log_probs[jnp.arange(labels.shape[0]), labels])
 
     def batch_accuracy(params: jnp.ndarray, images: np.ndarray, labels: np.ndarray) -> float:
         logits = np.asarray(logits_batch(params, jnp.asarray(images)))
@@ -174,7 +172,7 @@ def main() -> None:
     result = optimize_dataset_optical_module(
         init_params=phase_params,
         build_module=build_module,
-        sample_loss_fn=sample_loss_fn,
+        batch_loss_fn=batch_loss_fn,
         optimizer=optimizer,
         train_data=train_data,
         batch_size=BATCH_SIZE,

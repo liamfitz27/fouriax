@@ -96,8 +96,8 @@ class Field:
     Complex optical field over a 2D grid for one or more wavelengths.
 
     Data shape is:
-    - scalar mode: `(num_wavelengths, ny, nx)`
-    - jones mode: `(num_wavelengths, 2, ny, nx)` with channel order `(Ex, Ey)`
+    - scalar mode: `(*batch, num_wavelengths, ny, nx)`
+    - jones mode: `(*batch, num_wavelengths, 2, ny, nx)` with channel order `(Ex, Ey)`
     `domain` indicates whether `data` is represented in spatial or k-space.
     """
 
@@ -191,16 +191,24 @@ class Field:
         return self.polarization_mode == "jones"
 
     @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return self.data.shape[:-4] if self.is_jones else self.data.shape[:-3]
+
+    @property
+    def has_batch(self) -> bool:
+        return bool(self.batch_shape)
+
+    @property
     def num_polarization_channels(self) -> int:
         return 2 if self.is_jones else 1
 
     def component_intensity(self) -> jnp.ndarray:
         if self.is_jones:
             return jnp.abs(self.data) ** 2
-        return (jnp.abs(self.data) ** 2)[:, None, :, :]
+        return (jnp.abs(self.data) ** 2)[..., None, :, :]
 
     def intensity(self) -> jnp.ndarray:
-        return jnp.sum(self.component_intensity(), axis=1)
+        return jnp.sum(self.component_intensity(), axis=-3)
 
     def phase(self) -> jnp.ndarray:
         return jnp.angle(self.data)
@@ -214,9 +222,9 @@ class Field:
             raise ValueError("cannot normalize field with near-zero power")
         scale = jnp.sqrt(jnp.asarray(target, dtype=current.dtype) / current)
         if self.is_jones:
-            scale = scale[:, None, None, None]
+            scale = scale[..., None, None, None]
         else:
-            scale = scale[:, None, None]
+            scale = scale[..., None, None]
         return Field(
             data=self.data * scale,
             grid=self.grid,
@@ -305,18 +313,19 @@ class Field:
         self.spectrum.validate()
         expected_shape: tuple[int, ...]
         if self.polarization_mode == "scalar":
-            if self.data.ndim != 3:
+            if self.data.ndim < 3:
                 raise ValueError(
-                    "scalar field data must have shape (num_wavelengths, ny, nx)"
+                    "scalar field data must have shape (*batch, num_wavelengths, ny, nx)"
                 )
             expected_shape = (self.spectrum.size, self.grid.ny, self.grid.nx)
         else:
-            if self.data.ndim != 4:
+            if self.data.ndim < 4:
                 raise ValueError(
-                    "jones field data must have shape (num_wavelengths, 2, ny, nx)"
+                    "jones field data must have shape (*batch, num_wavelengths, 2, ny, nx)"
                 )
             expected_shape = (self.spectrum.size, 2, self.grid.ny, self.grid.nx)
-        if self.data.shape != expected_shape:
+        if self.data.shape[-len(expected_shape) :] != expected_shape:
             raise ValueError(
-                f"field data shape mismatch: got {self.data.shape}, expected {expected_shape}"
+                "field data shape mismatch: got "
+                f"{self.data.shape}, expected trailing shape {expected_shape}"
             )

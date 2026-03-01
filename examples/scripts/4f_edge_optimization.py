@@ -80,16 +80,21 @@ def make_test_scene(grid: Grid) -> jnp.ndarray:
     return jnp.clip(scene, 0.0, 1.0)
 
 
-def measure_scene(
+def measure_scenes(
     module: OpticalModule,
-    scene: jnp.ndarray,
+    scenes: jnp.ndarray,
     grid: Grid,
     spectrum: Spectrum,
 ) -> jnp.ndarray:
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(
-        scene[None, :, :],
+    scenes = jnp.asarray(scenes, dtype=jnp.float32)
+    if scenes.ndim == 2:
+        scenes = scenes[None, :, :]
+    field_in = Field(
+        data=scenes[:, None, :, :].astype(jnp.complex64),
+        grid=grid,
+        spectrum=spectrum,
     )
-    return module.measure(field_in)[::-1, ::-1]
+    return module.measure(field_in)[..., ::-1, ::-1]
 
 
 def main() -> None:
@@ -145,20 +150,20 @@ def main() -> None:
     n_test_eval = min(10, N_TEST_SCENES)  # evaluate on a subset for speed
     val_data = (test_scenes[:n_test_eval], test_targets[:n_test_eval])
     
-    def sample_loss_fn(
+    def batch_loss_fn(
         params: jnp.ndarray,
-        sample: tuple[jnp.ndarray, jnp.ndarray],
+        batch: tuple[jnp.ndarray, jnp.ndarray],
     ) -> jnp.ndarray:
-        scene, target = sample
+        scenes, targets = batch
         module = build_module(params)
-        out = measure_scene(module, scene, grid, spectrum)
-        out_n = out / jnp.maximum(jnp.max(out), 1e-12)
-        return jnp.mean((out_n - target) ** 2)
+        out = measure_scenes(module, scenes, grid, spectrum)
+        out_n = out / jnp.maximum(jnp.max(out, axis=(-2, -1), keepdims=True), 1e-12)
+        return jnp.mean((out_n - jnp.asarray(targets, dtype=jnp.float32)) ** 2)
 
     result = optimize_dataset_optical_module(
         init_params=raw_phase,
         build_module=build_module,
-        sample_loss_fn=sample_loss_fn,
+        batch_loss_fn=batch_loss_fn,
         optimizer=optimizer,
         train_data=(train_scenes, train_targets),
         batch_size=BATCH_SIZE,
@@ -175,7 +180,7 @@ def main() -> None:
     final_phase = np.asarray(2.0 * jnp.pi * jax.nn.sigmoid(result.params_result.best_params))
     test_scene = make_test_scene(grid)
     test_target = edge_target(test_scene)
-    test_out = np.asarray(measure_scene(result.best_module, test_scene, grid, spectrum))
+    test_out = np.asarray(measure_scenes(result.best_module, test_scene, grid, spectrum)[0])
     test_out_n = test_out / np.max(test_out)
     cc = float(np.corrcoef(test_out_n.ravel(), np.asarray(test_target).ravel())[0, 1])
     print(f"Test-scene correlation: {cc:.4f}")

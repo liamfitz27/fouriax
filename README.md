@@ -49,7 +49,7 @@ module = fx.OpticalModule(
 
 # Forward pass — fully differentiable
 output = module.forward(field)
-intensity = output.intensity()  # (num_wavelengths, ny, nx)
+intensity = output.intensity()  # unbatched: (num_wavelengths, ny, nx)
 ```
 
 ## Examples

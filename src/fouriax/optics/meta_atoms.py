@@ -276,8 +276,8 @@ class MetaAtomInterpolationLayer(OpticalLayer):
                     geometry_params=geometry[1][None, :],
                     wavelengths_um=field.spectrum.wavelengths_um,
                 )[0]
-                out_x = field.data[:, 0] * tx[:, None, None].astype(field.data.dtype)
-                out_y = field.data[:, 1] * ty[:, None, None].astype(field.data.dtype)
+                out_x = field.data[..., 0, :, :] * tx[:, None, None].astype(field.data.dtype)
+                out_y = field.data[..., 1, :, :] * ty[:, None, None].astype(field.data.dtype)
             else:
                 if geometry.ndim != 4 or geometry.shape[0] != 2:
                     raise ValueError(
@@ -300,10 +300,10 @@ class MetaAtomInterpolationLayer(OpticalLayer):
                 )
                 tx_mod = jnp.moveaxis(tx, -1, 0).astype(field.data.dtype)
                 ty_mod = jnp.moveaxis(ty, -1, 0).astype(field.data.dtype)
-                out_x = field.data[:, 0] * tx_mod
-                out_y = field.data[:, 1] * ty_mod
+                out_x = field.data[..., 0, :, :] * tx_mod
+                out_y = field.data[..., 1, :, :] * ty_mod
             return Field(
-                data=jnp.stack([out_x, out_y], axis=1),
+                data=jnp.stack([out_x, out_y], axis=-3),
                 grid=field.grid,
                 spectrum=field.spectrum,
                 polarization_mode=field.polarization_mode,
