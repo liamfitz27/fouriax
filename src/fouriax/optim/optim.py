@@ -394,7 +394,8 @@ def optimize_dataset_optical_module(
     *,
     init_params: ParamsT,
     build_module: Callable[[ParamsT], ModuleT],
-    loss_fn: Callable[[ParamsT, Any], jax.Array | jnp.ndarray],
+    batch_loss_fn: Callable[[ParamsT, Any], jax.Array | jnp.ndarray] | None = None,
+    sample_loss_fn: Callable[[ParamsT, Any], jax.Array | jnp.ndarray] | None = None,
     optimizer: optax.GradientTransformation,
     train_data: Any,
     batch_size: int,
@@ -411,14 +412,31 @@ def optimize_dataset_optical_module(
 
     This is a high-level convenience wrapper:
     - minibatching is derived internally from `iter_minibatches(...)`
-    - validation uses the same `loss_fn` averaged over `val_data`
+    - exactly one of `batch_loss_fn` or `sample_loss_fn` must be provided
+    - validation uses the same effective batch loss averaged over `val_data`
     - reporting uses a uniform built-in console formatter
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
+    if (batch_loss_fn is None) == (sample_loss_fn is None):
+        raise ValueError("provide exactly one of batch_loss_fn or sample_loss_fn")
 
     train_arrays = _as_batch_arrays(train_data, name="train_data")
     val_arrays = None if val_data is None else _as_batch_arrays(val_data, name="val_data")
+
+    if sample_loss_fn is not None:
+        def effective_batch_loss_fn(params: ParamsT, batch: Any) -> jax.Array | jnp.ndarray:
+            batch_items = batch if isinstance(batch, tuple) else (batch,)
+
+            def sample_loss_wrapped(*sample_items: Any) -> jax.Array | jnp.ndarray:
+                sample = sample_items[0] if len(sample_items) == 1 else sample_items
+                return sample_loss_fn(params, sample)
+
+            return jnp.mean(jax.vmap(sample_loss_wrapped)(*batch_items))
+    else:
+        def effective_batch_loss_fn(params: ParamsT, batch: Any) -> jax.Array | jnp.ndarray:
+            assert batch_loss_fn is not None
+            return batch_loss_fn(params, batch)
 
     def batch_iter_fn(data: tuple[Any, ...], epoch: int) -> Iterable[tuple[Any, ...]]:
         return iter_minibatches(
@@ -435,7 +453,7 @@ def optimize_dataset_optical_module(
     ) -> dict[str, float]:
         losses: list[float] = []
         for batch in iter_minibatches(*data, batch_size=batch_size, shuffle=False):
-            losses.append(float(loss_fn(params, batch)))
+            losses.append(float(effective_batch_loss_fn(params, batch)))
         if not losses:
             raise ValueError("validation data produced no batches")
         return {"val_loss": sum(losses) / len(losses)}
@@ -447,7 +465,7 @@ def optimize_dataset_optical_module(
         optimizer=optimizer,
         train_data=train_arrays,
         batch_iter_fn=batch_iter_fn,
-        train_loss_fn=loss_fn,
+        train_loss_fn=effective_batch_loss_fn,
         epochs=epochs,
         val_eval_fn=val_eval_fn if val_arrays is not None else None,
         val_data=val_arrays,
@@ -471,7 +489,12 @@ def optimize_dataset_hybrid_module(
     init_optical_params: ParamsT,
     init_decoder_params: DecoderParamsT,
     build_module: Callable[[ParamsT], ModuleT],
-    loss_fn: Callable[[ParamsT, DecoderParamsT, Any], jax.Array | jnp.ndarray],
+    batch_loss_fn: (
+        Callable[[ParamsT, DecoderParamsT, Any], jax.Array | jnp.ndarray] | None
+    ) = None,
+    sample_loss_fn: (
+        Callable[[ParamsT, DecoderParamsT, Any], jax.Array | jnp.ndarray] | None
+    ) = None,
     train_data: Any,
     batch_size: int,
     epochs: int,
@@ -490,7 +513,8 @@ def optimize_dataset_hybrid_module(
 
     Simplified wrapper behavior matches `optimize_dataset_optical_module(...)`:
     - internal minibatching via `iter_minibatches(...)`
-    - validation uses the same `loss_fn`, averaged over `val_data`
+    - exactly one of `batch_loss_fn` or `sample_loss_fn` must be provided
+    - validation uses the same effective batch loss, averaged over `val_data`
     - built-in uniform reporting
 
     Optimizer selection:
@@ -500,6 +524,8 @@ def optimize_dataset_hybrid_module(
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
+    if (batch_loss_fn is None) == (sample_loss_fn is None):
+        raise ValueError("provide exactly one of batch_loss_fn or sample_loss_fn")
 
     has_direct_optimizer = optimizer is not None
     has_group_optimizers = optical_optimizer is not None or decoder_optimizer is not None
@@ -530,8 +556,19 @@ def optimize_dataset_hybrid_module(
             drop_last=drop_last_train,
         )
 
-    def combined_loss_fn(params: dict[str, Any], batch: Any) -> jax.Array | jnp.ndarray:
-        return loss_fn(params["optical"], params["decoder"], batch)
+    if sample_loss_fn is not None:
+        def combined_loss_fn(params: dict[str, Any], batch: Any) -> jax.Array | jnp.ndarray:
+            batch_items = batch if isinstance(batch, tuple) else (batch,)
+
+            def sample_loss_wrapped(*sample_items: Any) -> jax.Array | jnp.ndarray:
+                sample = sample_items[0] if len(sample_items) == 1 else sample_items
+                return sample_loss_fn(params["optical"], params["decoder"], sample)
+
+            return jnp.mean(jax.vmap(sample_loss_wrapped)(*batch_items))
+    else:
+        def combined_loss_fn(params: dict[str, Any], batch: Any) -> jax.Array | jnp.ndarray:
+            assert batch_loss_fn is not None
+            return batch_loss_fn(params["optical"], params["decoder"], batch)
 
     def val_eval_fn(
         params: dict[str, Any],

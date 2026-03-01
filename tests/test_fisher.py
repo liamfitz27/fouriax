@@ -15,6 +15,7 @@ from fouriax.analysis import (
     score_fisher_information,
     sensitivity_map,
 )
+from fouriax.optics import GaussianNoise, PoissonNoise
 
 # ---------------------------------------------------------------------------
 # Jacobian
@@ -48,7 +49,7 @@ def test_fim_gaussian_linear():
         return A @ params
 
     params = jnp.zeros(2)
-    fim = fisher_information(forward, params, noise_model="gaussian", noise_variance=sigma2)
+    fim = fisher_information(forward, params, noise_model=GaussianNoise(std=jnp.sqrt(sigma2)))
     expected = A.T @ (jnp.diag(1.0 / sigma2) @ A)
     np.testing.assert_allclose(fim, expected, atol=1e-5)
 
@@ -61,7 +62,7 @@ def test_fim_gaussian_unit_variance():
         return A @ params
 
     params = jnp.zeros(2)
-    fim = fisher_information(forward, params, noise_model="gaussian")
+    fim = fisher_information(forward, params)
     expected = A.T @ A
     np.testing.assert_allclose(fim, expected, atol=1e-5)
 
@@ -73,7 +74,7 @@ def test_fim_poisson():
         return jnp.exp(params)  # ensures positive mu
 
     params = jnp.array([1.0, 2.0, 0.5])
-    fim = fisher_information(forward, params, noise_model="poisson")
+    fim = fisher_information(forward, params, noise_model=PoissonNoise(count_scale=1.0))
 
     mu = jnp.exp(params)
     # J = diag(mu), so J^T diag(1/mu) J = diag(mu) * diag(1/mu) * diag(mu) = diag(mu)
@@ -102,8 +103,11 @@ def test_score_fim_gaussian_recovers_closed_form():
         return -0.5 * jnp.sum((y - mu_p) ** 2 / sigma2)
 
     score_fim = score_fisher_information(log_prob, params, samples)
-    closed_fim = fisher_information(lambda p: A @ p, params, noise_model="gaussian",
-                                    noise_variance=sigma2)
+    closed_fim = fisher_information(
+        lambda p: A @ p,
+        params,
+        noise_model=GaussianNoise(std=jnp.sqrt(sigma2)),
+    )
 
     # Monte Carlo estimate should be close with 10k samples
     np.testing.assert_allclose(score_fim, closed_fim, atol=0.15)
@@ -143,6 +147,24 @@ def test_d_optimality_matches_slogdet():
     fim = jnp.array([[4.0, 1.0], [1.0, 3.0]])
     d_opt = d_optimality(fim)
     _, expected = jnp.linalg.slogdet(fim)
+    np.testing.assert_allclose(d_opt, expected, atol=1e-6)
+
+
+def test_d_optimality_with_prior_covariance_matches_information_gain():
+    """Prior-aware D-optimality should equal log det(I + Σ_prior FIM)."""
+    fim = jnp.array([[2.0, 0.3], [0.3, 1.5]])
+    sigma_prior = jnp.array([4.0, 9.0])
+    d_opt = d_optimality(fim, prior_covariance=sigma_prior)
+    _, expected = jnp.linalg.slogdet(jnp.eye(2) + jnp.diag(sigma_prior) @ fim)
+    np.testing.assert_allclose(d_opt, expected, atol=1e-6)
+
+
+def test_d_optimality_with_prior_precision_matches_posterior_precision():
+    """Relative baseline can be disabled to return posterior precision log-det."""
+    fim = jnp.array([[1.5, 0.2], [0.2, 0.9]])
+    lambda_prior = jnp.array([2.0, 3.0])
+    d_opt = d_optimality(fim, prior_precision=lambda_prior, relative_to_prior=False)
+    _, expected = jnp.linalg.slogdet(fim + jnp.diag(lambda_prior))
     np.testing.assert_allclose(d_opt, expected, atol=1e-6)
 
 
@@ -195,7 +217,7 @@ def test_fim_differentiable():
         def forward(p):
             return jnp.array([p[0] * p[1], p[0] + p[1]])
 
-        fim = fisher_information(forward, params, noise_model="gaussian")
+        fim = fisher_information(forward, params)
         return d_optimality(fim)
 
     params = jnp.array([1.0, 2.0])

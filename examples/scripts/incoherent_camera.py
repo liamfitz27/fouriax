@@ -10,10 +10,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from fouriax.optics import (
+    CameraSensor,
     Field,
     Grid,
     IncoherentImager,
-    IntensitySensor,
     OpticalModule,
     RSPropagator,
     Spectrum,
@@ -92,8 +92,12 @@ def main() -> None:
         mode="otf",
     )
 
-    module_psf = OpticalModule(layers=(imager_psf,), sensor=IntensitySensor(sum_wavelengths=True))
-    module_otf = OpticalModule(layers=(imager_otf,), sensor=IntensitySensor(sum_wavelengths=True))
+    camera_sensor = CameraSensor(
+        pixel_grid=grid,
+        qe_curve=1.0,
+    )
+    module_psf = OpticalModule(layers=(imager_psf,), sensor=camera_sensor)
+    module_otf = OpticalModule(layers=(imager_otf,), sensor=camera_sensor)
 
     #%% Evaluation
     image_psf = np.asarray(module_psf.measure(field_in))

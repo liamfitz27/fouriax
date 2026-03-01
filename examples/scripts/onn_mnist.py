@@ -14,9 +14,9 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
+    CameraSensor,
     Field,
     Grid,
-    IntensitySensor,
     OpticalModule,
     PhaseMask,
     Spectrum,
@@ -60,22 +60,6 @@ def load_mnist(cache_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np
     return x_train, y_train, x_test, y_test
 
 
-def build_detector_bank(grid: Grid) -> jnp.ndarray:
-    """Build 10 non-overlapping detector regions (2 rows x 5 cols)."""
-    x_edges = np.linspace(0, grid.nx, 6, dtype=int)
-    y_edges = np.linspace(0, grid.ny, 3, dtype=int)
-    masks = np.zeros((10, grid.ny, grid.nx), dtype=np.float32)
-
-    idx = 0
-    for row in range(2):
-        for col in range(5):
-            x0, x1 = x_edges[col], x_edges[col + 1]
-            y0, y1 = y_edges[row], y_edges[row + 1]
-            masks[idx, y0:y1, x0:x1] = 1.0
-            idx += 1
-    return jnp.asarray(masks)
-
-
 def resize_images_to_grid(images: np.ndarray, grid: Grid) -> np.ndarray:
     arr = jnp.asarray(images, dtype=jnp.float32)[..., None]
     resized = jax.image.resize(
@@ -115,8 +99,15 @@ def main() -> None:
         dx_um=(work_grid.nx * work_grid.dx_um) / mask_nx,
         dy_um=(work_grid.ny * work_grid.dy_um) / mask_ny,
     )
-    detector_masks = build_detector_bank(work_grid)
-    detector_sensor = IntensitySensor(detector_masks=detector_masks, sum_wavelengths=True)
+    detector_grid = Grid.from_extent(
+        nx=5,
+        ny=2,
+        dx_um=(work_grid.nx * work_grid.dx_um) / 5.0,
+        dy_um=(work_grid.ny * work_grid.dy_um) / 2.0,
+    )
+    detector_sensor = CameraSensor(
+        pixel_grid=detector_grid,
+    )
 
     def build_module(raw_params: jnp.ndarray) -> OpticalModule:
         layers = []
@@ -154,17 +145,20 @@ def main() -> None:
             grid=work_grid,
             spectrum=spectrum,
         )
-        return module.measure(field)
+        return module.measure(field).reshape(-1)
 
     logits_batch = jax.vmap(logits_single, in_axes=(None, 0))
 
-    def batch_loss(
-        params: jnp.ndarray, images: jnp.ndarray, labels: jnp.ndarray
+    def sample_loss_fn(
+        params: jnp.ndarray,
+        sample: tuple[np.ndarray, np.ndarray] | tuple[jnp.ndarray, jnp.ndarray],
     ) -> jnp.ndarray:
-        logits = logits_batch(params, images)
-        log_probs = logits - jax.scipy.special.logsumexp(logits, axis=1, keepdims=True)
-        nll = -log_probs[jnp.arange(labels.shape[0]), labels]
-        return jnp.mean(nll)
+        image_raw, label_raw = sample
+        image = jnp.asarray(image_raw, dtype=jnp.float32)
+        label = jnp.asarray(label_raw, dtype=jnp.int32)
+        logits = logits_single(params, image)
+        log_probs = logits - jax.scipy.special.logsumexp(logits, axis=0)
+        return -log_probs[label]
 
     def batch_accuracy(params: jnp.ndarray, images: np.ndarray, labels: np.ndarray) -> float:
         logits = np.asarray(logits_batch(params, jnp.asarray(images)))
@@ -175,19 +169,10 @@ def main() -> None:
     train_data = (x_train, y_train)
     val_data = (x_test, y_test)
 
-    def loss_fn(
-        params: jnp.ndarray,
-        batch: tuple[np.ndarray, np.ndarray],
-    ) -> jnp.ndarray:
-        xb_np, yb_np = batch
-        xb = jnp.asarray(xb_np, dtype=jnp.float32)
-        yb = jnp.asarray(yb_np, dtype=jnp.int32)
-        return batch_loss(params, xb, yb)
-
     result = optimize_dataset_optical_module(
         init_params=phase_params,
         build_module=build_module,
-        loss_fn=loss_fn,
+        sample_loss_fn=sample_loss_fn,
         optimizer=optimizer,
         train_data=train_data,
         batch_size=BATCH_SIZE,

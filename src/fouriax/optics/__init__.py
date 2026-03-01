@@ -1,6 +1,6 @@
 """Core optics data models."""
 
-from fouriax.optics.interfaces import OpticalLayer, Sensor
+from fouriax.optics.interfaces import Monitor, OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
     ComplexMask,
@@ -18,6 +18,7 @@ from fouriax.optics.layers import (
 )
 from fouriax.optics.meta_atoms import MetaAtomInterpolationLayer, MetaAtomLibrary
 from fouriax.optics.model import Field, Grid, Spectrum
+from fouriax.optics.monitors import FieldMonitor, IntensityMonitor
 from fouriax.optics.na_planning import (
     apply_na_limits,
     build_na_mask,
@@ -27,6 +28,12 @@ from fouriax.optics.na_planning import (
     layer_with_na_if_supported,
     na_schedule,
     propagation_layer_view,
+)
+from fouriax.optics.noise import (
+    GaussianNoise,
+    PoissonGaussianNoise,
+    PoissonNoise,
+    SensorNoiseModel,
 )
 from fouriax.optics.plotting import plot_field_evolution
 from fouriax.optics.propagation import (
@@ -38,12 +45,19 @@ from fouriax.optics.propagation import (
     recommend_nyquist_grid,
     select_propagator_method,
 )
-from fouriax.optics.sensors import FieldReadout, IntensitySensor
+from fouriax.optics.sensors import CameraSensor, FieldReadout, IntensitySensor
 
 __all__ = [
     "Field",
     "Grid",
     "Spectrum",
+    "SensorNoiseModel",
+    "PoissonNoise",
+    "GaussianNoise",
+    "PoissonGaussianNoise",
+    "Monitor",
+    "IntensityMonitor",
+    "FieldMonitor",
     "build_na_mask",
     "OpticalLayer",
     "Sensor",
@@ -60,6 +74,7 @@ __all__ = [
     "KJonesMatrixLayer",
     "ThinLens",
     "IncoherentImager",
+    "CameraSensor",
     "IntensitySensor",
     "FieldReadout",
     "MetaAtomLibrary",

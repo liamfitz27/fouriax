@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
+import jax
 import jax.numpy as jnp
 
 from fouriax.fft import fftconvolve, fftconvolve_same_with_otf
@@ -211,12 +212,12 @@ class OpticalModule(OpticalLayer):
             output = layer.forward(output)
         return output
 
-    def measure(self, field: Field) -> jnp.ndarray:
+    def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
         """Forward through layers and apply the configured sensor."""
         if self.sensor is None:
             raise ValueError("OpticalModule has no sensor configured")
         output = self.forward(field)
-        return self.sensor.measure(output)
+        return self.sensor.measure(output, key=key)
 
     def trace(self, field: Field, include_input: bool = True) -> list[Field]:
         """Return intermediate fields through the module."""

@@ -12,10 +12,10 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
+    CameraSensor,
     ComplexMask,
     Field,
     Grid,
-    IntensitySensor,
     OpticalModule,
     Spectrum,
     ThinLens,
@@ -37,6 +37,7 @@ EPOCHS = 25
 LR = 5e-3
 N_TRAIN_SCENES = 1000
 N_TEST_SCENES = 100
+BATCH_SIZE = 8
 
 #%% Helper Functions
 def random_scene(key: jax.Array, grid: Grid) -> jnp.ndarray:
@@ -110,7 +111,7 @@ def main() -> None:
                 ComplexMask(phase_map_rad=phase),
                 prop, lens, prop,
             ),
-            sensor=IntensitySensor(sum_wavelengths=True),
+            sensor=CameraSensor(pixel_grid=grid),
         )
 
     #%% Training Data
@@ -144,13 +145,11 @@ def main() -> None:
     n_test_eval = min(10, N_TEST_SCENES)  # evaluate on a subset for speed
     val_data = (test_scenes[:n_test_eval], test_targets[:n_test_eval])
     
-    def loss_fn(
+    def sample_loss_fn(
         params: jnp.ndarray,
-        batch: tuple[jnp.ndarray, jnp.ndarray],
+        sample: tuple[jnp.ndarray, jnp.ndarray],
     ) -> jnp.ndarray:
-        scenes, targets = batch
-        scene = scenes[0]
-        target = targets[0]
+        scene, target = sample
         module = build_module(params)
         out = measure_scene(module, scene, grid, spectrum)
         out_n = out / jnp.maximum(jnp.max(out), 1e-12)
@@ -159,10 +158,10 @@ def main() -> None:
     result = optimize_dataset_optical_module(
         init_params=raw_phase,
         build_module=build_module,
-        loss_fn=loss_fn,
+        sample_loss_fn=sample_loss_fn,
         optimizer=optimizer,
         train_data=(train_scenes, train_targets),
-        batch_size=1,
+        batch_size=BATCH_SIZE,
         epochs=EPOCHS,
         val_data=val_data,
         seed=SEED,
@@ -204,7 +203,7 @@ def main() -> None:
     axes[1, 1].set_title("Analytical spiral phase")
     fig.colorbar(im_s, ax=axes[1, 1], fraction=0.046, pad=0.04)
 
-    axes[1, 2].plot(train_history, alpha=0.5, label="Train (per-sample)")
+    axes[1, 2].plot(train_history, alpha=0.5, label="Train (batch mean)")
     test_steps, test_vals = zip(*test_history, strict=True)
     axes[1, 2].plot(test_steps, test_vals, "o-", markersize=3, label="Test (mean)")
     axes[1, 2].set_title("Loss history")
