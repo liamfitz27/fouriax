@@ -39,7 +39,8 @@ class IntensityMonitor(Monitor):
     def read(self, field: Field) -> jnp.ndarray:
         field = _field_in_domain(field, self.output_domain)
         self.validate_for(field)
-        if self.channel_resolved and field.is_jones:
+        channel_resolved = self.channel_resolved and field.is_jones
+        if channel_resolved:
             intensity = field.component_intensity()
         else:
             intensity = field.intensity()
@@ -52,18 +53,18 @@ class IntensityMonitor(Monitor):
                     f"detector_masks spatial shape mismatch: got {masks.shape[1:]}, "
                     f"expected {(field.grid.ny, field.grid.nx)}"
                 )
-            if intensity.ndim == 4:
-                per_wavelength = jnp.sum(
-                    intensity[:, :, None, :, :] * masks[None, None, :, :, :],
-                    axis=(-2, -1),
-                )  # (num_wavelengths, 2, num_detectors)
+            if channel_resolved:
+                per_wavelength = jnp.einsum("...wcxy,dxy->...wcd", intensity, masks)
             else:
-                per_wavelength = jnp.sum(
-                    intensity[:, None, :, :] * masks[None, :, :, :],
-                    axis=(-2, -1),
-                )  # (num_wavelengths, num_detectors)
-            return jnp.sum(per_wavelength, axis=0) if self.sum_wavelengths else per_wavelength
-        return jnp.sum(intensity, axis=0) if self.sum_wavelengths else intensity
+                per_wavelength = jnp.einsum("...wxy,dxy->...wd", intensity, masks)
+            return (
+                jnp.sum(per_wavelength, axis=-3 if channel_resolved else -2)
+                if self.sum_wavelengths
+                else per_wavelength
+            )
+        if self.sum_wavelengths:
+            return jnp.sum(intensity, axis=-4 if channel_resolved else -3)
+        return intensity
 
 
 @dataclass(frozen=True)
@@ -72,8 +73,8 @@ class FieldMonitor(Monitor):
 
     Supported values for `representation`:
     - "complex": complex array:
-      - scalar `(wavelengths, ny, nx)`
-      - jones `(wavelengths, 2, ny, nx)`
+      - scalar `(*batch, wavelengths, ny, nx)`
+      - jones `(*batch, wavelengths, 2, ny, nx)`
     - "real_imag": stacked real/imag in trailing axis
     - "amplitude_phase": stacked amplitude/phase in trailing axis
     """

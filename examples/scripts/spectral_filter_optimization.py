@@ -175,42 +175,68 @@ def main() -> None:
             ),
         )
 
-    def build_sample_field(sample_spectrum: np.ndarray | jnp.ndarray) -> Field:
-        sample_spectrum = jnp.asarray(sample_spectrum, dtype=jnp.float32)
-        sample_amp = jnp.sqrt(jnp.maximum(sample_spectrum, 0.0)).reshape((spectrum.size, 1, 1))
+    def build_sample_field(sample_spectra: np.ndarray | jnp.ndarray) -> Field:
+        sample_spectra = jnp.asarray(sample_spectra, dtype=jnp.float32)
+        if sample_spectra.ndim == 1:
+            sample_spectra = sample_spectra[None, :]
+        sample_amp = jnp.sqrt(jnp.maximum(sample_spectra, 0.0)).reshape(
+            (sample_spectra.shape[0], spectrum.size, 1, 1)
+        )
         field_data = (
-            jnp.ones((spectrum.size, array_size, array_size), dtype=jnp.complex64)
+            jnp.ones(
+                (sample_spectra.shape[0], spectrum.size, array_size, array_size),
+                dtype=jnp.complex64,
+            )
             * sample_amp
         )
         return Field(data=field_data, grid=grid, spectrum=spectrum, domain="spatial")
 
-    def measure_sample(
+    def measure_batch(
         raw_filter: jnp.ndarray,
-        sample_spectrum: np.ndarray | jnp.ndarray,
+        batch_spectra: np.ndarray | jnp.ndarray,
         *,
-        noise_key: jax.Array | None = None,
+        noise_keys: np.ndarray | jnp.ndarray | None = None,
     ) -> jnp.ndarray:
         module = build_filter_module(raw_filter)
-        field = build_sample_field(sample_spectrum)
-        image = module.measure(field, key=noise_key).astype(jnp.float32)
-        return image.reshape(-1)
+        field = build_sample_field(batch_spectra)
+        sensor = module.sensor
+        if not isinstance(sensor, DetectorArray):
+            raise ValueError("filter module must use DetectorArray for batched measurement")
+
+        image_clean = sensor.expected(field).astype(jnp.float32)
+        if noise_keys is None:
+            image = image_clean
+        else:
+            noise_keys = jnp.asarray(noise_keys, dtype=jnp.uint32)
+            if noise_keys.ndim == 1:
+                noise_keys = noise_keys[None, :]
+            image = jax.vmap(
+                lambda clean_sample, sample_key: noise_model.sample(clean_sample, key=sample_key)
+            )(image_clean, noise_keys)
+        return image.reshape((image.shape[0], -1))
 
 
     #%% Proxy Loss and Optimization
-    def sample_proxy_loss(
+    def batch_proxy_loss(
         raw_filter: jnp.ndarray,
-        sample_spectrum: np.ndarray | jnp.ndarray,
+        batch_spectra: np.ndarray | jnp.ndarray,
     ) -> jnp.ndarray:
-        sample_spectrum = jnp.asarray(sample_spectrum, dtype=jnp.float32)
-        sample_coeffs = sample_spectrum @ basis_np
         a = filter_intensity_matrix(raw_filter)
         ab = a @ basis
-        fisher = fisher_information(
-            lambda coeffs: ab @ coeffs,
-            sample_coeffs,
-            noise_model=noise_model,
+        batch_spectra = jnp.asarray(batch_spectra, dtype=jnp.float32)
+        batch_coeffs = batch_spectra @ basis
+        d_opt = jnp.mean(
+            jax.vmap(
+                lambda coeffs: d_optimality(
+                    fisher_information(
+                        lambda c: ab @ c,
+                        coeffs,
+                        noise_model=noise_model,
+                    ),
+                    prior_covariance=signal_prior_cov,
+                )
+            )(batch_coeffs)
         )
-        d_opt = d_optimality(fisher, prior_covariance=signal_prior_cov)
         regularization = (
             SMOOTHNESS_REG * filter_smoothness(raw_filter)
             + UNITY_REG * jnp.mean((filter_intensity_matrix(raw_filter) - 1.0) ** 2)
@@ -220,7 +246,7 @@ def main() -> None:
     proxy_result = optimize_dataset_optical_module(
         init_params=raw_filter,
         build_module=build_filter_module,
-        sample_loss_fn=sample_proxy_loss,
+        batch_loss_fn=batch_proxy_loss,
         optimizer=proxy_optimizer,
         train_data=train,
         batch_size=PROXY_BATCH_SIZE,
@@ -240,49 +266,33 @@ def main() -> None:
     )
     params = {"raw_filter": raw_filter, "recon": recon_params}
 
-    def measure_decode(
-        raw_filter: jnp.ndarray,
-        decoder_params: dict[str, jnp.ndarray],
-        sample_spectrum: np.ndarray | jnp.ndarray,
-        *,
-        noise_key: jax.Array,
-    ) -> jnp.ndarray:
-        y_noisy = measure_sample(raw_filter, sample_spectrum, noise_key=noise_key)
-        return recon_model.apply(decoder_params, y_noisy[None, :])[0]
-
     def measure_decode_batch(
         raw_filter: jnp.ndarray,
         decoder_params: dict[str, jnp.ndarray],
         batch_spectra: np.ndarray | jnp.ndarray,
         batch_noise_keys: np.ndarray | jnp.ndarray,
     ) -> jnp.ndarray:
-        return jax.vmap(
-            lambda sample_spectrum, sample_noise_key: measure_decode(
-                raw_filter,
-                decoder_params,
-                sample_spectrum,
-                noise_key=sample_noise_key,
-            )
-        )(batch_spectra, batch_noise_keys)
+        y_noisy = measure_batch(raw_filter, batch_spectra, noise_keys=batch_noise_keys)
+        return recon_model.apply(decoder_params, y_noisy)
 
     train_noise_keys = np.asarray(jax.random.split(train_rng, train.shape[0]))
     val_noise_keys = np.asarray(jax.random.split(eval_rng, val.shape[0]))
 
-    def hybrid_sample_loss(
+    def hybrid_batch_loss(
         optical_params: jnp.ndarray,
         decoder_params: dict[str, jnp.ndarray],
-        sample: tuple[np.ndarray, np.ndarray] | tuple[jnp.ndarray, jnp.ndarray],
+        batch: tuple[np.ndarray, np.ndarray] | tuple[jnp.ndarray, jnp.ndarray],
     ) -> jnp.ndarray:
-        sample_spectrum_raw, sample_noise_key_raw = sample
-        sample_spectrum = jnp.asarray(sample_spectrum_raw, dtype=jnp.float32)
-        sample_noise_key = jnp.asarray(sample_noise_key_raw, dtype=jnp.uint32)
-        x_hat = measure_decode(
+        batch_spectra_raw, batch_noise_keys_raw = batch
+        batch_spectra = jnp.asarray(batch_spectra_raw, dtype=jnp.float32)
+        batch_noise_keys = jnp.asarray(batch_noise_keys_raw, dtype=jnp.uint32)
+        x_hat = measure_decode_batch(
             optical_params,
             decoder_params,
-            sample_spectrum,
-            noise_key=sample_noise_key,
+            batch_spectra,
+            batch_noise_keys,
         )
-        recon_mse = jnp.mean((x_hat - sample_spectrum) ** 2)
+        recon_mse = jnp.mean((x_hat - batch_spectra) ** 2)
         regularization = (
             SMOOTHNESS_REG * filter_smoothness(optical_params)
             + UNITY_REG * jnp.mean((filter_intensity_matrix(optical_params) - 1.0) ** 2)
@@ -293,7 +303,7 @@ def main() -> None:
         init_optical_params=raw_filter,
         init_decoder_params=recon_params,
         build_module=build_filter_module,
-        sample_loss_fn=hybrid_sample_loss,
+        batch_loss_fn=hybrid_batch_loss,
         train_data=(train, train_noise_keys),
         batch_size=RECON_BATCH_SIZE,
         epochs=RECON_EPOCHS,

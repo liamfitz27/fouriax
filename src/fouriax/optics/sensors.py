@@ -86,19 +86,24 @@ class DetectorArray(Sensor):
 
     def expected(self, field: Field) -> jnp.ndarray:
         field_spatial = field.to_spatial()
-        if self.channel_resolved and field_spatial.is_jones:
+        channel_resolved = self.channel_resolved and field_spatial.is_jones
+        if channel_resolved:
             intensity = field_spatial.component_intensity()
         else:
             intensity = field_spatial.intensity()
 
         intensity_det = self._integrate_intensity(intensity, field_spatial.grid)
         weight = self._detector_intensity_weight(field_spatial)
-        if intensity_det.ndim == 4:
+        if channel_resolved:
             intensity_det = intensity_det * weight[:, None, :, :]
         else:
             intensity_det = intensity_det * weight
 
-        return jnp.sum(intensity_det, axis=0) if self.sum_wavelengths else intensity_det
+        return (
+            jnp.sum(intensity_det, axis=-4 if channel_resolved else -3)
+            if self.sum_wavelengths
+            else intensity_det
+        )
 
     def sample(self, field: Field, *, key: jax.Array) -> jnp.ndarray:
         return _apply_optional_noise(
@@ -112,35 +117,12 @@ class DetectorArray(Sensor):
         n_det = self.detector_grid.nx * self.detector_grid.ny
         flat_idx = y_idx * self.detector_grid.nx + x_idx
         flat_idx = jnp.where(valid, flat_idx, 0)
-
-        if intensity.ndim == 4:
-            values = intensity.reshape(
-                intensity.shape[0],
-                intensity.shape[1],
-                field_grid.ny * field_grid.nx,
-            )
-            values = jnp.where(valid[None, None, :], values, 0.0)
-            integrated = jnp.zeros(
-                (intensity.shape[0], intensity.shape[1], n_det),
-                dtype=intensity.dtype,
-            )
-            integrated = integrated.at[:, :, flat_idx].add(values)
-            return integrated.reshape(
-                intensity.shape[0],
-                intensity.shape[1],
-                self.detector_grid.ny,
-                self.detector_grid.nx,
-            )
-
-        values = intensity.reshape(intensity.shape[0], field_grid.ny * field_grid.nx)
+        leading_shape = intensity.shape[:-2]
+        values = intensity.reshape((-1, field_grid.ny * field_grid.nx))
         values = jnp.where(valid[None, :], values, 0.0)
-        integrated = jnp.zeros((intensity.shape[0], n_det), dtype=intensity.dtype)
+        integrated = jnp.zeros((values.shape[0], n_det), dtype=intensity.dtype)
         integrated = integrated.at[:, flat_idx].add(values)
-        return integrated.reshape(
-            intensity.shape[0],
-            self.detector_grid.ny,
-            self.detector_grid.nx,
-        )
+        return integrated.reshape((*leading_shape, self.detector_grid.ny, self.detector_grid.nx))
 
     def _detector_bin_indices(
         self,

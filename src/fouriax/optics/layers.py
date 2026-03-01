@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -184,10 +185,7 @@ def _centered_delta_field(field: Field) -> Field:
     data = jnp.zeros_like(field.data)
     cy = field.grid.ny // 2
     cx = field.grid.nx // 2
-    if field.is_jones:
-        data = data.at[:, :, cy, cx].set(1.0 + 0.0j)
-    else:
-        data = data.at[:, cy, cx].set(1.0 + 0.0j)
+    data = data.at[..., cy, cx].set(1.0 + 0.0j)
     return Field(
         data=data,
         grid=field.grid,
@@ -337,15 +335,15 @@ class JonesMatrixLayer(OpticalLayer):
         _require_domain(field, expected="spatial", layer_name="JonesMatrixLayer")
         self.validate_for(field)
         matrix = _expand_jones_matrix_map(self.jones_matrix, field, name="jones_matrix")
-        ex = field.data[:, 0, :, :]
-        ey = field.data[:, 1, :, :]
+        ex = field.data[..., 0, :, :]
+        ey = field.data[..., 1, :, :]
         if matrix.ndim == 2:
             out_ex = matrix[0, 0] * ex + matrix[0, 1] * ey
             out_ey = matrix[1, 0] * ex + matrix[1, 1] * ey
         else:
-            out_ex = matrix[:, 0, 0, :, :] * ex + matrix[:, 0, 1, :, :] * ey
-            out_ey = matrix[:, 1, 0, :, :] * ex + matrix[:, 1, 1, :, :] * ey
-        out = jnp.stack([out_ex, out_ey], axis=1)
+            out_ex = matrix[..., 0, 0, :, :] * ex + matrix[..., 0, 1, :, :] * ey
+            out_ey = matrix[..., 1, 0, :, :] * ex + matrix[..., 1, 1, :, :] * ey
+        out = jnp.stack([out_ex, out_ey], axis=-3)
         return _with_field_metadata(out, field)
 
     def validate_for(self, field: Field) -> None:
@@ -462,15 +460,15 @@ class KJonesMatrixLayer(OpticalLayer):
         _require_domain(field, expected="kspace", layer_name="KJonesMatrixLayer")
         self.validate_for(field)
         matrix = _expand_jones_matrix_map(self.jones_matrix, field, name="jones_matrix")
-        ex = field.data[:, 0, :, :]
-        ey = field.data[:, 1, :, :]
+        ex = field.data[..., 0, :, :]
+        ey = field.data[..., 1, :, :]
         if matrix.ndim == 2:
             out_ex = matrix[0, 0] * ex + matrix[0, 1] * ey
             out_ey = matrix[1, 0] * ex + matrix[1, 1] * ey
         else:
-            out_ex = matrix[:, 0, 0, :, :] * ex + matrix[:, 0, 1, :, :] * ey
-            out_ey = matrix[:, 1, 0, :, :] * ex + matrix[:, 1, 1, :, :] * ey
-        out = jnp.stack([out_ex, out_ey], axis=1)
+            out_ex = matrix[..., 0, 0, :, :] * ex + matrix[..., 0, 1, :, :] * ey
+            out_ey = matrix[..., 1, 0, :, :] * ex + matrix[..., 1, 1, :, :] * ey
+        out = jnp.stack([out_ex, out_ey], axis=-3)
         return _with_field_metadata(out, field)
 
     def validate_for(self, field: Field) -> None:
@@ -600,10 +598,19 @@ class IncoherentImager(OpticalLayer):
         if self.psf_source not in ("impulse", "plane_wave_focus"):
             raise ValueError("psf_source must be one of: impulse, plane_wave_focus")
 
+        calibration_field = Field.zeros(
+            grid=spatial_field.grid,
+            spectrum=spatial_field.spectrum,
+            dtype=spatial_field.data.dtype,
+        )
         if self.psf_source == "impulse":
-            source = _centered_delta_field(spatial_field)
+            source = _centered_delta_field(calibration_field)
         else:
-            source = Field.plane_wave(grid=spatial_field.grid, spectrum=spatial_field.spectrum)
+            source = Field.plane_wave(
+                grid=spatial_field.grid,
+                spectrum=spatial_field.spectrum,
+                dtype=spatial_field.data.dtype,
+            )
 
         coherent = self.optical_layer.forward(source)
         propagator = replace(self.propagator, distance_um=self.distance_um)  # type: ignore[type-var]
@@ -646,6 +653,11 @@ class IncoherentImager(OpticalLayer):
                 else "psf"
             )
 
+        batch_shape = spatial_field.batch_shape
+        flat_batch = math.prod(batch_shape) if batch_shape else 1
+        flat_intensity = intensity.reshape(
+            (flat_batch, spatial_field.spectrum.size, spatial_field.grid.ny, spatial_field.grid.nx)
+        )
         outputs: list[jnp.ndarray] = []
         if resolved_mode == "otf":
             ky, kx = spatial_field.grid.ny, spatial_field.grid.nx
@@ -664,7 +676,7 @@ class IncoherentImager(OpticalLayer):
             for i in range(spatial_field.spectrum.size):
                 outputs.append(
                     fftconvolve_same_with_otf(
-                        intensity[i],
+                        flat_intensity[:, i],
                         otf[i],
                         kernel_shape=(ky, kx),
                     )
@@ -672,9 +684,18 @@ class IncoherentImager(OpticalLayer):
         else:
             for i in range(spatial_field.spectrum.size):
                 psf_i = psf[0] if psf.shape[0] == 1 else psf[i]
-                outputs.append(fftconvolve(intensity[i], psf_i, mode="same", axes=(-2, -1)))
+                outputs.append(
+                    fftconvolve(flat_intensity[:, i], psf_i, mode="same", axes=(-2, -1))
+                )
 
-        image = jnp.stack(outputs, axis=0)
+        image = jnp.stack(outputs, axis=1).reshape(
+            (
+                *batch_shape,
+                spatial_field.spectrum.size,
+                spatial_field.grid.ny,
+                spatial_field.grid.nx,
+            )
+        )
         amplitude = jnp.sqrt(jnp.maximum(image, 0.0)).astype(spatial_field.data.real.dtype)
         return Field(
             data=amplitude.astype(spatial_field.data.dtype),

@@ -41,8 +41,8 @@ Key methods:
 `Field` is the tensor passed between layers:
 
 - `data`:
-  - scalar mode: complex array `(num_wavelengths, ny, nx)`
-  - Jones mode: complex array `(num_wavelengths, 2, ny, nx)` with channels `(Ex, Ey)`
+  - scalar mode: complex array `(*batch, num_wavelengths, ny, nx)`
+  - Jones mode: complex array `(*batch, num_wavelengths, 2, ny, nx)` with channels `(Ex, Ey)`
 - `grid`: `Grid`
 - `spectrum`: `Spectrum`
 - `polarization_mode`: `"scalar"` or `"jones"`
@@ -378,4 +378,3 @@ Design sensitivity and fabrication tolerance analysis:
   per parameter for a given output change (linear approximation)
 
 Both return pytrees matching the input parameter structure.
-

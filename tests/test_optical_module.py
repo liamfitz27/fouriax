@@ -40,6 +40,29 @@ def test_optical_module_applies_layers_in_order():
     np.testing.assert_allclose(np.asarray(out.data), np.asarray(expected), atol=1e-6)
 
 
+def test_optical_module_preserves_batch_axes():
+    grid = Grid.from_extent(nx=8, ny=6, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    amplitudes = jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32)
+    data = amplitudes[:, None, None, None].astype(jnp.complex64) * jnp.ones(
+        (3, 1, grid.ny, grid.nx),
+        dtype=jnp.complex64,
+    )
+    field = Field(data=data, grid=grid, spectrum=spectrum)
+
+    module = OpticalModule(
+        layers=(
+            PhaseMask(phase_map_rad=jnp.pi / 2.0),
+            AmplitudeMask(amplitude_map=0.5),
+        )
+    )
+    out = module.forward(field)
+
+    expected = 0.5j * data
+    assert out.data.shape == (3, 1, grid.ny, grid.nx)
+    np.testing.assert_allclose(np.asarray(out.data), np.asarray(expected), atol=1e-6)
+
+
 def test_phase_mask_layer_rejects_bad_shape():
     grid = Grid.from_extent(nx=8, ny=6, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
@@ -82,6 +105,27 @@ def test_propagation_layer_matches_direct_propagator():
         np.asarray(out_direct.data),
         atol=1e-6,
     )
+
+
+def test_batched_asm_matches_vmap_single_sample():
+    grid = Grid.from_extent(nx=8, ny=8, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    phase = jnp.asarray([0.0, 0.2, -0.4], dtype=jnp.float32)
+    data = jnp.exp(1j * phase[:, None, None, None]).astype(jnp.complex64) * jnp.ones(
+        (3, 1, grid.ny, grid.nx),
+        dtype=jnp.complex64,
+    )
+    field = Field(data=data, grid=grid, spectrum=spectrum)
+    layer = ASMPropagator(use_sampling_planner=False, distance_um=12.0)
+
+    out_batch = layer.forward(field)
+
+    def forward_single(sample_data: jnp.ndarray) -> jnp.ndarray:
+        sample_field = Field(data=sample_data, grid=grid, spectrum=spectrum)
+        return layer.forward(sample_field).data
+
+    out_vmap = jax.vmap(forward_single)(data)
+    np.testing.assert_allclose(np.asarray(out_batch.data), np.asarray(out_vmap), atol=1e-6)
 
 
 def test_detector_array_and_field_monitor_representations():
@@ -142,6 +186,40 @@ def test_optical_module_observe_reads_inline_monitors_and_forward_skips_them():
         np.asarray(forward_out.data),
         atol=1e-6,
     )
+
+
+def test_batched_monitor_and_detector_array_preserve_batch_axes():
+    grid = Grid.from_extent(nx=4, ny=4, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_array(jnp.array([0.532, 0.633], dtype=jnp.float32))
+    data = jnp.stack(
+        [
+            jnp.stack(
+                [
+                    jnp.ones(grid.shape, dtype=jnp.complex64),
+                    2.0j * jnp.ones(grid.shape, dtype=jnp.complex64),
+                ],
+                axis=0,
+            ),
+            jnp.stack(
+                [
+                    3.0 * jnp.ones(grid.shape, dtype=jnp.complex64),
+                    4.0j * jnp.ones(grid.shape, dtype=jnp.complex64),
+                ],
+                axis=0,
+            ),
+        ],
+        axis=0,
+    )
+    field = Field(data=data, grid=grid, spectrum=spectrum)
+
+    observed = IntensityMonitor(sum_wavelengths=True).read(field)
+    detector = DetectorArray(detector_grid=grid, sum_wavelengths=True).measure(field)
+
+    assert observed.shape == (2, grid.ny, grid.nx)
+    assert detector.shape == (2, grid.ny, grid.nx)
+    np.testing.assert_allclose(np.asarray(observed[0]), 5.0 * np.ones(grid.shape), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(observed[1]), 25.0 * np.ones(grid.shape), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(detector), np.asarray(observed), atol=1e-6)
 
 
 def test_na_schedule_uses_spatial_grid_and_k_layer_diameter():

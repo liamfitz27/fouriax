@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import warnings
 from dataclasses import dataclass
 from typing import Literal, cast
@@ -157,32 +158,15 @@ def _prepare_field_with_grid(field: Field, target_grid: Grid | None) -> Field:
     ):
         return field
 
-    if field.is_jones:
-        data = jnp.stack(
-            [
-                jnp.stack(
-                    [
-                        _resample_2d_to_grid(
-                            field.data[i, c],
-                            src_grid=field.grid,
-                            dst_grid=target_grid,
-                        )
-                        for c in range(field.num_polarization_channels)
-                    ],
-                    axis=0,
-                )
-                for i in range(field.spectrum.size)
-            ],
-            axis=0,
-        )
-    else:
-        data = jnp.stack(
-            [
-                _resample_2d_to_grid(field.data[i], src_grid=field.grid, dst_grid=target_grid)
-                for i in range(field.spectrum.size)
-            ],
-            axis=0,
-        )
+    leading_shape = field.data.shape[:-2]
+    flat_data = field.data.reshape((-1, field.grid.ny, field.grid.nx))
+    data = jnp.stack(
+        [
+            _resample_2d_to_grid(flat_data[i], src_grid=field.grid, dst_grid=target_grid)
+            for i in range(flat_data.shape[0])
+        ],
+        axis=0,
+    ).reshape((*leading_shape, target_grid.ny, target_grid.nx))
     return Field(
         data=data,
         grid=target_grid,
@@ -203,32 +187,15 @@ def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
     ):
         return field
 
-    if field.is_jones:
-        data = jnp.stack(
-            [
-                jnp.stack(
-                    [
-                        _resample_2d_to_grid(
-                            field.data[i, c],
-                            src_grid=field.grid,
-                            dst_grid=original_grid,
-                        )
-                        for c in range(field.num_polarization_channels)
-                    ],
-                    axis=0,
-                )
-                for i in range(field.spectrum.size)
-            ],
-            axis=0,
-        )
-    else:
-        data = jnp.stack(
-            [
-                _resample_2d_to_grid(field.data[i], src_grid=field.grid, dst_grid=original_grid)
-                for i in range(field.spectrum.size)
-            ],
-            axis=0,
-        )
+    leading_shape = field.data.shape[:-2]
+    flat_data = field.data.reshape((-1, field.grid.ny, field.grid.nx))
+    data = jnp.stack(
+        [
+            _resample_2d_to_grid(flat_data[i], src_grid=field.grid, dst_grid=original_grid)
+            for i in range(flat_data.shape[0])
+        ],
+        axis=0,
+    ).reshape((*leading_shape, original_grid.ny, original_grid.nx))
     return Field(
         data=data,
         grid=original_grid,
@@ -238,6 +205,42 @@ def _restore_to_original_grid(field: Field, original_grid: Grid) -> Field:
         kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
         ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
     )
+
+
+def _flatten_batch_axes(field: Field) -> tuple[jnp.ndarray, tuple[int, ...]]:
+    batch_shape = field.batch_shape
+    flat_batch = math.prod(batch_shape) if batch_shape else 1
+    if field.is_jones:
+        flat = field.data.reshape(
+            (
+                flat_batch,
+                field.spectrum.size,
+                field.num_polarization_channels,
+                field.grid.ny,
+                field.grid.nx,
+            )
+        )
+    else:
+        flat = field.data.reshape((flat_batch, field.spectrum.size, field.grid.ny, field.grid.nx))
+    return flat, batch_shape
+
+
+def _restore_batch_axes(
+    field: Field,
+    flat_data: jnp.ndarray,
+    batch_shape: tuple[int, ...],
+) -> jnp.ndarray:
+    if field.is_jones:
+        return flat_data.reshape(
+            (
+                *batch_shape,
+                field.spectrum.size,
+                field.num_polarization_channels,
+                field.grid.ny,
+                field.grid.nx,
+            )
+        )
+    return flat_data.reshape((*batch_shape, field.spectrum.size, field.grid.ny, field.grid.nx))
 
 
 @dataclass(frozen=True)
@@ -321,25 +324,18 @@ class RSPropagator(OpticalLayer):
                 min_padding_factor=self.min_padding_factor,
             )
         work_field = _prepare_field_with_grid(field, target_grid)
+        flat_data, batch_shape = _flatten_batch_axes(work_field)
 
         area_um2 = work_field.grid.dx_um * work_field.grid.dy_um
         outputs = []
         for i, wavelength_um in enumerate(work_field.spectrum.wavelengths_um):
             kernel = self.delta_response(work_field, wavelength_um, distance_um)
-            if work_field.is_jones:
-                propagated = fftconvolve(
-                    work_field.data[i],
-                    kernel[None, :, :],
-                    mode="same",
-                    axes=(-2, -1),
-                )
-            else:
-                propagated = fftconvolve(
-                    work_field.data[i],
-                    kernel,
-                    mode="same",
-                    axes=(-2, -1),
-                )
+            propagated = fftconvolve(
+                flat_data[:, i],
+                kernel,
+                mode="same",
+                axes=(-2, -1),
+            )
             propagated = propagated * area_um2
             if self.na_limit is not None:
                 na_mask = build_na_mask(
@@ -355,7 +351,7 @@ class RSPropagator(OpticalLayer):
                 )
             outputs.append(propagated)
 
-        data = jnp.stack(outputs, axis=0)
+        data = _restore_batch_axes(work_field, jnp.stack(outputs, axis=1), batch_shape)
         propagated_field = Field(
             data=data,
             grid=work_field.grid,
@@ -538,12 +534,13 @@ class KSpacePropagator(OpticalLayer):
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
+        flat_data, batch_shape = _flatten_batch_axes(field)
         outputs = []
         for i, wavelength_um in enumerate(field.spectrum.wavelengths_um):
             transfer = self.transfer_function(field, wavelength_um, distance_um)
-            outputs.append(field.data[i] * transfer)
+            outputs.append(flat_data[:, i] * transfer)
 
-        data = jnp.stack(outputs, axis=0)
+        data = _restore_batch_axes(field, jnp.stack(outputs, axis=1), batch_shape)
         return Field(
             data=data,
             grid=field.grid,
