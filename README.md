@@ -12,7 +12,7 @@ Differentiable free-space optics for JAX.
 - **Jones polarization** — full 2×2 Jones matrix layers (`JonesMatrixLayer`, `KJonesMatrixLayer`) and per-channel field diagnostics.
 - **Meta-atom libraries** — wavelength- and geometry-parameterized lookup tables with multilinear interpolation (`MetaAtomLibrary`, `MetaAtomInterpolationLayer`).
 - **Incoherent imaging** — shift-invariant PSF/OTF filtering via `IncoherentImager`.
-- **Sensors** — `IntensitySensor` (with optional detector masks) and `FieldReadout` for complex-field extraction.
+- **Detectors** — `Detector` for region-integrated intensity readout and `DetectorArray` for grid readout with optional noise.
 - **NA planning** — numerical-aperture schedule utilities for multi-segment systems.
 - **End-to-end differentiable** — every layer traces through JAX for gradient-based optimization with Optax.
 

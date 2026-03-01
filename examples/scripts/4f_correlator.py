@@ -15,8 +15,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from fouriax.optics import (
-    CameraSensor,
     ComplexMask,
+    DetectorArray,
     Field,
     Grid,
     OpticalModule,
@@ -119,7 +119,7 @@ def main() -> None:
             ComplexMask(amplitude_map=amp, phase_map_rad=phase),
             prop, lens, prop,
         ),
-        sensor=CameraSensor(pixel_grid=grid),
+        sensor=DetectorArray(detector_grid=grid),
     )
 
     #%% Evaluation

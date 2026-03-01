@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from fouriax.optics import AmplitudeMask, CameraSensor, Field, Grid, PoissonNoise, Spectrum
+from fouriax.optics import AmplitudeMask, DetectorArray, Field, Grid, PoissonNoise, Spectrum
 
 
 def _two_wavelength_field() -> Field:
@@ -20,14 +20,14 @@ def _two_wavelength_field() -> Field:
     return Field(data=data, grid=grid, spectrum=spectrum, domain="spatial")
 
 
-def test_camera_sensor_expected_applies_qe_and_pixel_filter():
+def test_detector_array_expected_applies_qe_and_pixel_filter():
     field = _two_wavelength_field()
     qe = jnp.array([0.5, 1.0], dtype=jnp.float32)
     filter_mask = AmplitudeMask(
         amplitude_map=jnp.ones(field.grid.shape, dtype=jnp.float32) * 0.5,
     )
-    sensor = CameraSensor(
-        pixel_grid=field.grid,
+    sensor = DetectorArray(
+        detector_grid=field.grid,
         qe_curve=qe,
         filter_mask=filter_mask,
     )
@@ -43,36 +43,36 @@ def test_camera_sensor_expected_applies_qe_and_pixel_filter():
     )
 
 
-def test_camera_sensor_filter_mask_must_match_pixel_grid():
+def test_detector_array_filter_mask_must_match_detector_grid():
     field = _two_wavelength_field()
     bad_filter = AmplitudeMask(amplitude_map=jnp.ones((2, 2), dtype=jnp.float32))
-    sensor = CameraSensor(
-        pixel_grid=field.grid,
+    sensor = DetectorArray(
+        detector_grid=field.grid,
         qe_curve=jnp.array([0.5, 1.0], dtype=jnp.float32),
         filter_mask=bad_filter,
     )
 
-    with pytest.raises(ValueError, match="filter_mask must be defined on pixel_grid"):
+    with pytest.raises(ValueError, match="filter_mask must be defined on detector_grid"):
         _ = sensor.measure(field)
 
 
-def test_camera_sensor_can_resample_to_readout_grid():
+def test_detector_array_can_resample_to_readout_grid():
     field = _two_wavelength_field()
     readout_grid = Grid.from_extent(nx=2, ny=2, dx_um=2.0, dy_um=1.5)
-    sensor = CameraSensor(
-        pixel_grid=readout_grid,
+    sensor = DetectorArray(
+        detector_grid=readout_grid,
         qe_curve=1.0,
-        pixel_resample_method="nearest",
+        resample_method="nearest",
     )
 
     measured = sensor.measure(field)
     assert measured.shape == (readout_grid.ny, readout_grid.nx)
 
 
-def test_camera_sensor_noise_is_opt_in_via_key():
+def test_detector_array_noise_is_opt_in_via_key():
     field = _two_wavelength_field()
-    sensor = CameraSensor(
-        pixel_grid=field.grid,
+    sensor = DetectorArray(
+        detector_grid=field.grid,
         qe_curve=1.0,
         noise_model=PoissonNoise(count_scale=100.0),
     )

@@ -19,7 +19,7 @@ from sklearn.decomposition import PCA
 from fouriax.analysis import d_optimality, fisher_information
 from fouriax.optics import (
     AmplitudeMask,
-    CameraSensor,
+    DetectorArray,
     Field,
     Grid,
     OpticalModule,
@@ -168,8 +168,8 @@ def main() -> None:
         )
         return OpticalModule(
             layers=(),
-            sensor=CameraSensor(
-                pixel_grid=grid,
+            sensor=DetectorArray(
+                detector_grid=grid,
                 filter_mask=AmplitudeMask(amplitude_map=amp_map),
                 noise_model=noise_model,
             ),

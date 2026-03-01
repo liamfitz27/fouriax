@@ -45,7 +45,7 @@ from fouriax.optics.propagation import (
     recommend_nyquist_grid,
     select_propagator_method,
 )
-from fouriax.optics.sensors import CameraSensor, FieldReadout, IntensitySensor
+from fouriax.optics.sensors import Detector, DetectorArray
 
 __all__ = [
     "Field",
@@ -74,9 +74,8 @@ __all__ = [
     "KJonesMatrixLayer",
     "ThinLens",
     "IncoherentImager",
-    "CameraSensor",
-    "IntensitySensor",
-    "FieldReadout",
+    "Detector",
+    "DetectorArray",
     "MetaAtomLibrary",
     "MetaAtomInterpolationLayer",
     "ASMPropagator",
