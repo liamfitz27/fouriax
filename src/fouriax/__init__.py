@@ -28,7 +28,6 @@ from fouriax.optics import (
     ThinLens,
     critical_distance_um,
     plan_propagation,
-    plot_field_evolution,
     select_propagator_method,
 )
 
@@ -61,5 +60,4 @@ __all__ = [
     "plan_propagation",
     "critical_distance_um",
     "select_propagator_method",
-    "plot_field_evolution",
 ]

@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 from fouriax.fft import fftconvolve, fftconvolve_same_with_otf
-from fouriax.optics.interfaces import OpticalLayer, Sensor
+from fouriax.optics.interfaces import Monitor, OpticalLayer, Sensor
 from fouriax.optics.model import Field
 
 
@@ -201,15 +201,17 @@ def _centered_delta_field(field: Field) -> Field:
 
 @dataclass(frozen=True)
 class OpticalModule(OpticalLayer):
-    """Thin sequential container for optical layers."""
+    """Thin sequential container for optical layers and monitor checkpoints."""
 
-    layers: tuple[OpticalLayer, ...]
+    layers: tuple[OpticalLayer | Monitor, ...]
     sensor: Sensor | None = None
 
     def forward(self, field: Field) -> Field:
         output = field
-        for layer in self.layers:
-            output = layer.forward(output)
+        for stage in self.layers:
+            if isinstance(stage, Monitor):
+                continue
+            output = stage.forward(output)
         return output
 
     def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
@@ -219,19 +221,35 @@ class OpticalModule(OpticalLayer):
         output = self.forward(field)
         return self.sensor.measure(output, key=key)
 
+    def observe(self, field: Field) -> tuple[Field, tuple[jnp.ndarray, ...]]:
+        """Run one forward pass and collect outputs from inline monitor checkpoints."""
+        output = field
+        observed: list[jnp.ndarray] = []
+        for stage in self.layers:
+            if isinstance(stage, Monitor):
+                observed.append(stage.read(output))
+                continue
+            output = stage.forward(output)
+
+        return output, tuple(observed)
+
     def trace(self, field: Field, include_input: bool = True) -> list[Field]:
         """Return intermediate fields through the module."""
         output = field
         states: list[Field] = [output] if include_input else []
-        for layer in self.layers:
-            output = layer.forward(output)
+        for stage in self.layers:
+            if isinstance(stage, Monitor):
+                continue
+            output = stage.forward(output)
             states.append(output)
         return states
 
     def parameters(self) -> dict[str, jnp.ndarray]:
         params: dict[str, jnp.ndarray] = {}
-        for i, layer in enumerate(self.layers):
-            for key, value in layer.parameters().items():
+        for i, stage in enumerate(self.layers):
+            if isinstance(stage, Monitor):
+                continue
+            for key, value in stage.parameters().items():
                 params[f"layer_{i}.{key}"] = value
         return params
 

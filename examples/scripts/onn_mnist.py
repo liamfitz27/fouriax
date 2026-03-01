@@ -12,16 +12,17 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
+from matplotlib.patches import Rectangle
 
 from fouriax.optics import (
     DetectorArray,
     Field,
     Grid,
+    IntensityMonitor,
     OpticalModule,
     PhaseMask,
     Spectrum,
     plan_propagation,
-    plot_field_evolution,
 )
 from fouriax.optim import optimize_dataset_optical_module
 
@@ -37,7 +38,7 @@ DEVICE = "cpu"
 SEED = 0
 EPOCHS = 10
 BATCH_SIZE = 64
-LEARNING_RATE = 0.2
+LEARNING_RATE = 0.05
 NUM_PHASE_LAYERS = 4
 PHASE_MASK_DOWNSAMPLE = 4
 NYQUIST_FACTOR = 1.0
@@ -110,7 +111,7 @@ def main() -> None:
     )
 
     def build_module(raw_params: jnp.ndarray) -> OpticalModule:
-        layers = []
+        layers = [IntensityMonitor(sum_wavelengths=True, output_domain="spatial")]
         for i in range(raw_params.shape[0]):
             upsampled_latent = jax.image.resize(
                 raw_params[i],
@@ -120,6 +121,7 @@ def main() -> None:
             bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
             layers.append(PhaseMask(phase_map_rad=bounded_phase))
             layers.append(propagator)
+            layers.append(IntensityMonitor(sum_wavelengths=True, output_domain="spatial"))
         return OpticalModule(layers=tuple(layers), sensor=detector_array)
 
     x_train, y_train, x_test, y_test = load_mnist(MNIST_CACHE_PATH)
@@ -204,13 +206,73 @@ def main() -> None:
     )
 
     #%% Plot Results
-    fig_field, _ = plot_field_evolution(
-        module=module,
-        field_in=sample_field,
-        mode="intensity",
-        wavelength_idx=0,
-        log_scale=False,
+    _, intensity_steps = module.observe(sample_field)
+    phase_masks = [
+        np.asarray(stage.phase_map_rad)
+        for stage in module.layers
+        if isinstance(stage, PhaseMask)
+    ]
+    titles = ["Input"] + [
+        f"After Propagation {i + 1}" for i in range(len(intensity_steps) - 1)
+    ]
+    n_cols = max(len(intensity_steps), len(phase_masks))
+    fig_field, axes = plt.subplots(
+        2,
+        n_cols,
+        figsize=(max(6.0, 2.8 * n_cols), 6.8),
+        squeeze=False,
     )
+    for col, ax in enumerate(axes[0]):
+        if col >= len(intensity_steps):
+            ax.axis("off")
+            continue
+        title = titles[col]
+        image = intensity_steps[col]
+        im = ax.imshow(np.asarray(image), cmap="inferno")
+        ax.set_title(title, fontsize=9)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig_field.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+        if col == len(intensity_steps) - 1:
+            cell_w = work_grid.nx / detector_grid.nx
+            cell_h = work_grid.ny / detector_grid.ny
+            digit = 0
+            for row in range(detector_grid.ny):
+                for det_col in range(detector_grid.nx):
+                    ax.add_patch(
+                        Rectangle(
+                            (det_col * cell_w - 0.5, row * cell_h - 0.5),
+                            cell_w,
+                            cell_h,
+                            fill=False,
+                            edgecolor="red",
+                            linewidth=1.2,
+                        )
+                    )
+                    ax.text(
+                        det_col * cell_w + 0.5 * cell_w - 0.5,
+                        row * cell_h + 0.5 * cell_h - 0.5,
+                        str(digit),
+                        color="red",
+                        fontsize=10,
+                        fontweight="bold",
+                        ha="center",
+                        va="center",
+                    )
+                    digit += 1
+
+    for col, ax in enumerate(axes[1]):
+        if col >= len(phase_masks):
+            ax.axis("off")
+            continue
+        phase = phase_masks[col]
+        im = ax.imshow(phase, cmap="twilight", vmin=0.0, vmax=2.0 * np.pi)
+        ax.set_title(f"Phase Mask {col + 1}", fontsize=9)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        fig_field.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+
+    fig_field.suptitle("ONN Intensity Checkpoints and Learned Phase Masks", y=0.98)
     fig_field.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
     fig_field.savefig(PLOT_PATH, dpi=150)
     plt.close(fig_field)

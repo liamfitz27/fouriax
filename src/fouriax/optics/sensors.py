@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal
 
 import jax
-import jax.image
 import jax.numpy as jnp
 
 from fouriax.optics.interfaces import Sensor
@@ -86,17 +85,20 @@ class DetectorArray(Sensor):
         return _apply_optional_noise(measured, noise_model=self.noise_model, key=key)
 
     def expected(self, field: Field) -> jnp.ndarray:
-        field_det = self._field_on_detector_grid(field)
-        qe_mask = self._build_qe_mask(field_det)
-        field_weighted = qe_mask.forward(field_det)
-        if self.filter_mask is not None:
-            self._validate_filter_mask(field_weighted)
-            field_weighted = self.filter_mask.forward(field_weighted)
-        return IntensityMonitor(
-            sum_wavelengths=self.sum_wavelengths,
-            channel_resolved=self.channel_resolved,
-            output_domain=None,
-        ).read(field_weighted)
+        field_spatial = field.to_spatial()
+        if self.channel_resolved and field_spatial.is_jones:
+            intensity = field_spatial.component_intensity()
+        else:
+            intensity = field_spatial.intensity()
+
+        intensity_det = self._integrate_intensity(intensity, field_spatial.grid)
+        weight = self._detector_intensity_weight(field_spatial)
+        if intensity_det.ndim == 4:
+            intensity_det = intensity_det * weight[:, None, :, :]
+        else:
+            intensity_det = intensity_det * weight
+
+        return jnp.sum(intensity_det, axis=0) if self.sum_wavelengths else intensity_det
 
     def sample(self, field: Field, *, key: jax.Array) -> jnp.ndarray:
         return _apply_optional_noise(
@@ -105,76 +107,100 @@ class DetectorArray(Sensor):
             key=key,
         )
 
-    def _build_qe_mask(self, field: Field) -> AmplitudeMask:
-        num_wavelengths = field.spectrum.size
-        dtype = field.data.real.dtype
-        ny, nx = field.grid.ny, field.grid.nx
-        if self.qe_curve is None:
-            qe = jnp.ones((num_wavelengths,), dtype=dtype)
-            qe_amp = jnp.sqrt(jnp.maximum(qe, 0.0))
-            qe_map = qe_amp[:, None, None] * jnp.ones((num_wavelengths, ny, nx), dtype=dtype)
-            return AmplitudeMask(amplitude_map=qe_map)
+    def _integrate_intensity(self, intensity: jnp.ndarray, field_grid: Grid) -> jnp.ndarray:
+        x_idx, y_idx, valid = self._detector_bin_indices(field_grid)
+        n_det = self.detector_grid.nx * self.detector_grid.ny
+        flat_idx = y_idx * self.detector_grid.nx + x_idx
+        flat_idx = jnp.where(valid, flat_idx, 0)
 
-        qe = jnp.asarray(self.qe_curve, dtype=dtype)
-        if qe.ndim == 0:
-            return AmplitudeMask(amplitude_map=jnp.sqrt(jnp.maximum(qe, 0.0)))
-        if qe.ndim != 1:
-            raise ValueError("qe_curve must be scalar or shape (num_wavelengths,)")
-        if qe.shape[0] not in (1, num_wavelengths):
-            raise ValueError(
-                f"qe_curve length mismatch: got {qe.shape[0]}, expected 1 or {num_wavelengths}"
+        if intensity.ndim == 4:
+            values = intensity.reshape(
+                intensity.shape[0],
+                intensity.shape[1],
+                field_grid.ny * field_grid.nx,
             )
-
-        qe_vec = (
-            qe
-            if qe.shape[0] == num_wavelengths
-            else jnp.ones((num_wavelengths,), dtype=dtype) * qe[0]
-        )
-        qe_amp = jnp.sqrt(jnp.maximum(qe_vec, 0.0))
-        qe_map = qe_amp[:, None, None] * jnp.ones((num_wavelengths, ny, nx), dtype=dtype)
-        return AmplitudeMask(amplitude_map=qe_map)
-
-    def _field_on_detector_grid(self, field: Field) -> Field:
-        field_spatial = field.to_spatial()
-        if (
-            field_spatial.grid.nx == self.detector_grid.nx
-            and field_spatial.grid.ny == self.detector_grid.ny
-            and field_spatial.grid.dx_um == self.detector_grid.dx_um
-            and field_spatial.grid.dy_um == self.detector_grid.dy_um
-        ):
-            return field_spatial
-
-        target_shape: tuple[int, ...] = (
-            field_spatial.spectrum.size,
-            self.detector_grid.ny,
-            self.detector_grid.nx,
-        )
-        if field_spatial.is_jones:
-            target_shape = (
-                field_spatial.spectrum.size,
-                2,
+            values = jnp.where(valid[None, None, :], values, 0.0)
+            integrated = jnp.zeros(
+                (intensity.shape[0], intensity.shape[1], n_det),
+                dtype=intensity.dtype,
+            )
+            integrated = integrated.at[:, :, flat_idx].add(values)
+            return integrated.reshape(
+                intensity.shape[0],
+                intensity.shape[1],
                 self.detector_grid.ny,
                 self.detector_grid.nx,
             )
 
-        resized_real = jax.image.resize(
-            field_spatial.data.real,
-            shape=target_shape,
-            method=self.resample_method,
+        values = intensity.reshape(intensity.shape[0], field_grid.ny * field_grid.nx)
+        values = jnp.where(valid[None, :], values, 0.0)
+        integrated = jnp.zeros((intensity.shape[0], n_det), dtype=intensity.dtype)
+        integrated = integrated.at[:, flat_idx].add(values)
+        return integrated.reshape(
+            intensity.shape[0],
+            self.detector_grid.ny,
+            self.detector_grid.nx,
         )
-        resized_imag = jax.image.resize(
-            field_spatial.data.imag,
-            shape=target_shape,
-            method=self.resample_method,
+
+    def _detector_bin_indices(
+        self,
+        field_grid: Grid,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        x_centers = (jnp.arange(field_grid.nx) - (field_grid.nx - 1) / 2.0) * field_grid.dx_um
+        y_centers = (jnp.arange(field_grid.ny) - (field_grid.ny - 1) / 2.0) * field_grid.dy_um
+        x, y = jnp.meshgrid(x_centers, y_centers, indexing="xy")
+
+        det_x_min = -0.5 * self.detector_grid.nx * self.detector_grid.dx_um
+        det_y_min = -0.5 * self.detector_grid.ny * self.detector_grid.dy_um
+        x_idx = jnp.floor((x - det_x_min) / self.detector_grid.dx_um).astype(jnp.int32)
+        y_idx = jnp.floor((y - det_y_min) / self.detector_grid.dy_um).astype(jnp.int32)
+        valid = (
+            (x_idx >= 0)
+            & (x_idx < self.detector_grid.nx)
+            & (y_idx >= 0)
+            & (y_idx < self.detector_grid.ny)
         )
-        resized_data = cast(jnp.ndarray, resized_real + 1j * resized_imag)
-        return Field(
-            data=resized_data,
-            grid=self.detector_grid,
-            spectrum=field_spatial.spectrum,
-            polarization_mode=field_spatial.polarization_mode,
-            domain="spatial",
-        )
+        return x_idx.reshape(-1), y_idx.reshape(-1), valid.reshape(-1)
+
+    def _detector_intensity_weight(self, field: Field) -> jnp.ndarray:
+        qe = self._qe_intensity_map(field)
+        if self.filter_mask is None:
+            return qe
+
+        self._validate_filter_mask(field)
+        amp = jnp.asarray(self.filter_mask.amplitude_map, dtype=field.data.real.dtype)
+        if amp.ndim == 2:
+            filt = (amp * amp)[None, :, :]
+        else:
+            filt = amp * amp
+            if filt.shape[0] == 1:
+                filt = jnp.broadcast_to(filt, qe.shape)
+        return qe * filt
+
+    def _qe_intensity_map(self, field: Field) -> jnp.ndarray:
+        num_wavelengths = field.spectrum.size
+        dtype = field.data.real.dtype
+        ny, nx = self.detector_grid.ny, self.detector_grid.nx
+        if self.qe_curve is None:
+            qe_vec = jnp.ones((num_wavelengths,), dtype=dtype)
+        else:
+            qe = jnp.asarray(self.qe_curve, dtype=dtype)
+            if qe.ndim == 0:
+                qe_vec = jnp.ones((num_wavelengths,), dtype=dtype) * qe
+            else:
+                if qe.ndim != 1:
+                    raise ValueError("qe_curve must be scalar or shape (num_wavelengths,)")
+                if qe.shape[0] not in (1, num_wavelengths):
+                    raise ValueError(
+                        "qe_curve length mismatch: "
+                        f"got {qe.shape[0]}, expected 1 or {num_wavelengths}"
+                    )
+                qe_vec = (
+                    qe
+                    if qe.shape[0] == num_wavelengths
+                    else jnp.ones((num_wavelengths,), dtype=dtype) * qe[0]
+                )
+        return qe_vec[:, None, None] * jnp.ones((num_wavelengths, ny, nx), dtype=dtype)
 
     def _validate_filter_mask(self, field: Field) -> None:
         if self.filter_mask is None:
