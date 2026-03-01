@@ -35,7 +35,6 @@ from fouriax.optics.noise import (
     PoissonNoise,
     SensorNoiseModel,
 )
-from fouriax.optics.plotting import plot_field_evolution
 from fouriax.optics.propagation import (
     ASMPropagator,
     KSpacePropagator,
@@ -85,7 +84,6 @@ __all__ = [
     "critical_distance_um",
     "select_propagator_method",
     "recommend_nyquist_grid",
-    "plot_field_evolution",
     "propagation_layer_view",
     "collect_stops",
     "collect_propagation_segments",

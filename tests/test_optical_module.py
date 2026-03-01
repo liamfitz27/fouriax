@@ -12,6 +12,7 @@ from fouriax.optics import (
     FieldMonitor,
     FourierTransform,
     Grid,
+    IntensityMonitor,
     InverseFourierTransform,
     KSpacePhaseMask,
     OpticalModule,
@@ -114,6 +115,31 @@ def test_detector_array_and_field_monitor_representations():
     np.testing.assert_allclose(
         np.asarray(real_imag[..., 1]),
         np.asarray(field.data.imag),
+        atol=1e-6,
+    )
+
+
+def test_optical_module_observe_reads_inline_monitors_and_forward_skips_them():
+    grid = Grid.from_extent(nx=4, ny=4, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    field = Field.plane_wave(grid=grid, spectrum=spectrum, amplitude=2.0)
+    module = OpticalModule(
+        layers=(
+            IntensityMonitor(sum_wavelengths=True),
+            AmplitudeMask(amplitude_map=0.5),
+            IntensityMonitor(sum_wavelengths=True),
+        )
+    )
+
+    forward_out = module.forward(field)
+    observe_out, observed = module.observe(field)
+
+    assert len(observed) == 2
+    np.testing.assert_allclose(np.asarray(observed[0]), 4.0 * np.ones(grid.shape), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(observed[1]), np.ones(grid.shape), atol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(observe_out.data),
+        np.asarray(forward_out.data),
         atol=1e-6,
     )
 

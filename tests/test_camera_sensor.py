@@ -69,6 +69,25 @@ def test_detector_array_can_resample_to_readout_grid():
     assert measured.shape == (readout_grid.ny, readout_grid.nx)
 
 
+def test_detector_array_integrates_intensity_without_complex_cancellation():
+    grid = Grid.from_extent(nx=2, ny=1, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    data = jnp.asarray([[1.0 + 0.0j, -1.0 + 0.0j]], dtype=jnp.complex64).reshape((1, 1, 2))
+    field = Field(data=data, grid=grid, spectrum=spectrum, domain="spatial")
+    sensor = DetectorArray(
+        detector_grid=Grid.from_extent(nx=1, ny=1, dx_um=2.0, dy_um=1.0),
+        qe_curve=1.0,
+        resample_method="linear",
+    )
+
+    measured = sensor.measure(field)
+    np.testing.assert_allclose(
+        np.asarray(measured),
+        np.asarray([[2.0]], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
 def test_detector_array_noise_is_opt_in_via_key():
     field = _two_wavelength_field()
     sensor = DetectorArray(
