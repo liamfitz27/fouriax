@@ -21,6 +21,7 @@ from fouriax.optics import (
     Grid,
     OpticalModule,
     PhaseMask,
+    PoissonNoise,
     Spectrum,
     plan_propagation,
 )
@@ -98,7 +99,7 @@ def main() -> None:
     print("Computing observation FIM (angle of incidence)...")
     fim_angle = fisher_information(
         forward_angle, angles_nominal,
-        noise_model="poisson",
+        noise_model=PoissonNoise(count_scale=1.0),
     )
     crb_angle = cramer_rao_bound(fim_angle, regularize=1e-15)
     d_opt = d_optimality(fim_angle)

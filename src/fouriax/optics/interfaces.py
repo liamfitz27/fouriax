@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+import jax
 import jax.numpy as jnp
 
 from fouriax.optics.model import Field
@@ -27,7 +28,7 @@ class Sensor(ABC):
     """Base interface for converting fields into measurements."""
 
     @abstractmethod
-    def measure(self, field: Field) -> jnp.ndarray:
+    def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
         """Produce a sensor measurement from a field."""
 
     def validate_for(self, field: Field) -> None:
@@ -35,3 +36,13 @@ class Sensor(ABC):
         field.validate()
 
 
+class Monitor(ABC):
+    """Base interface for deterministic, non-physical field readouts."""
+
+    @abstractmethod
+    def read(self, field: Field) -> jnp.ndarray:
+        """Produce a deterministic monitoring readout from a field."""
+
+    def validate_for(self, field: Field) -> None:
+        """Validate monitor compatibility with the input field."""
+        field.validate()

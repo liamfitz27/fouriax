@@ -15,6 +15,8 @@ from typing import Any, Callable, Literal, TypeVar, cast
 import jax
 import jax.numpy as jnp
 
+from fouriax.optics.noise import SensorNoiseModel
+
 ParamsT = TypeVar("ParamsT")
 
 
@@ -68,43 +70,38 @@ def fisher_information(
     forward_fn: Callable[[Any], jnp.ndarray],
     params: Any,
     *,
-    noise_model: Literal["gaussian", "poisson"] = "gaussian",
-    noise_variance: jnp.ndarray | float | None = None,
+    noise_model: SensorNoiseModel | None = None,
 ) -> jnp.ndarray:
-    """Closed-form Fisher information matrix for Gaussian or Poisson noise.
+    """Closed-form Fisher information matrix for analytic noise models.
 
-    For a forward model ``mu = forward_fn(params)`` observed with additive noise:
+    For a forward model ``mu = forward_fn(params)``, this computes
+    ``FIM = J^T Lambda J`` where ``J = dmu/dparams`` and ``Lambda`` is the
+    analytic noise precision matrix provided by `noise_model`.
 
-    * **Gaussian**: ``FIM = J^T diag(1/sigma^2) J`` where ``sigma^2`` is
-      ``noise_variance`` (defaults to 1).
-    * **Poisson**: ``FIM = J^T diag(1/mu) J`` where ``mu = forward_fn(params)``.
+    If `noise_model` is omitted, unit-variance independent Gaussian noise is
+    assumed, so ``Lambda = I`` and the result reduces to ``J^T J``.
 
     Args:
         forward_fn: Maps params → 1-D predicted measurement vector.
         params: Parameter pytree.
-        noise_model: ``"gaussian"`` or ``"poisson"``.
-        noise_variance: Per-element variance for Gaussian model. Scalar or
-            array matching output shape.  Ignored for Poisson.
+        noise_model: Optional analytic noise model. It must provide a
+            `precision(expected)` method through `SensorNoiseModel`.
 
     Returns:
         FIM of shape ``(n_params, n_params)``.
     """
     jac = jacobian_matrix(forward_fn, params, mode="reverse")  # (n_out, n_par)
-
-    if noise_model == "gaussian":
-        if noise_variance is None:
-            inv_var = jnp.ones(jac.shape[0])
-        else:
-            inv_var = 1.0 / jnp.broadcast_to(jnp.asarray(noise_variance), (jac.shape[0],))
-        return jac.T @ (inv_var[:, None] * jac)
-
-    elif noise_model == "poisson":
-        mu = forward_fn(params).ravel()
-        inv_mu = 1.0 / jnp.maximum(mu, 1e-12)
-        return jac.T @ (inv_mu[:, None] * jac)
-
+    if noise_model is None:
+        precision = jnp.eye(jac.shape[0], dtype=jac.dtype)
     else:
-        raise ValueError(f"Unknown noise_model: {noise_model!r}")
+        expected = forward_fn(params).ravel()
+        precision = jnp.asarray(noise_model.precision(expected), dtype=jac.dtype)
+        if precision.shape != (jac.shape[0], jac.shape[0]):
+            raise ValueError(
+                "noise_model.precision(expected) must return shape "
+                f"{(jac.shape[0], jac.shape[0])}, got {precision.shape}"
+            )
+    return jac.T @ precision @ jac
 
 
 def score_fisher_information(
@@ -161,18 +158,97 @@ def cramer_rao_bound(fim: jnp.ndarray, *, regularize: float = 1e-10) -> jnp.ndar
     return jnp.diag(jnp.linalg.inv(fim_reg))
 
 
-def d_optimality(fim: jnp.ndarray) -> jnp.ndarray:
-    """D-optimality criterion: log-determinant of the FIM.
+def _as_square_matrix(
+    value: jnp.ndarray | float,
+    *,
+    size: int,
+    name: str,
+    dtype: jnp.dtype,
+) -> jnp.ndarray:
+    arr = jnp.asarray(value, dtype=dtype)
+    if arr.ndim == 0:
+        return arr * jnp.eye(size, dtype=dtype)
+    if arr.ndim == 1:
+        if arr.shape[0] != size:
+            raise ValueError(f"{name} length mismatch: got {arr.shape[0]}, expected {size}")
+        return jnp.diag(arr)
+    if arr.ndim == 2:
+        if arr.shape != (size, size):
+            raise ValueError(f"{name} shape mismatch: got {arr.shape}, expected {(size, size)}")
+        return arr
+    raise ValueError(f"{name} must be scalar, shape ({size},), or shape ({size}, {size})")
+
+
+def d_optimality(
+    fim: jnp.ndarray,
+    *,
+    prior_covariance: jnp.ndarray | float | None = None,
+    prior_precision: jnp.ndarray | float | None = None,
+    relative_to_prior: bool = True,
+) -> jnp.ndarray:
+    """D-optimality criterion, optionally with a Gaussian prior.
 
     Higher values indicate more information in the measurement. This is
     differentiable and commonly used as an optimization objective for
     experimental design.
 
+    With a Gaussian prior on the parameter vector, this computes the
+    posterior-precision log-determinant. If `relative_to_prior=True` (default),
+    the prior baseline is subtracted:
+
+    ``log det(FIM + Lambda_prior) - log det(Lambda_prior)``
+
+    which is equivalent to ``log det(I + Sigma_prior FIM)`` and is proportional
+    to the mutual information for a linear-Gaussian model.
+
     Args:
         fim: Fisher information matrix of shape ``(n, n)``.
+        prior_covariance: Optional prior covariance ``Sigma_prior``. Scalar,
+            diagonal vector, or full matrix.
+        prior_precision: Optional prior precision ``Lambda_prior``. Scalar,
+            diagonal vector, or full matrix.
+        relative_to_prior: When a prior is provided, subtract the prior
+            log-determinant baseline so the result measures information gain.
 
     Returns:
         Scalar log-determinant.
     """
-    sign, logdet = jnp.linalg.slogdet(fim)
-    return cast(jnp.ndarray, jnp.where(sign > 0, logdet, -1e12))
+    if prior_covariance is not None and prior_precision is not None:
+        raise ValueError("provide at most one of prior_covariance or prior_precision")
+
+    fim = jnp.asarray(fim)
+    if fim.ndim != 2 or fim.shape[0] != fim.shape[1]:
+        raise ValueError("fim must be a square matrix")
+
+    if prior_covariance is None and prior_precision is None:
+        sign, logdet = jnp.linalg.slogdet(fim)
+        return cast(jnp.ndarray, jnp.where(sign > 0, logdet, -1e12))
+
+    if prior_covariance is not None:
+        sigma_prior = _as_square_matrix(
+            prior_covariance,
+            size=fim.shape[0],
+            name="prior_covariance",
+            dtype=fim.dtype,
+        )
+        lambda_prior = jnp.linalg.inv(sigma_prior)
+    else:
+        if prior_precision is None:
+            raise ValueError(
+                "prior_precision must be provided when prior_covariance is not set"
+            )
+        lambda_prior = _as_square_matrix(
+            prior_precision,
+            size=fim.shape[0],
+            name="prior_precision",
+            dtype=fim.dtype,
+        )
+
+    posterior_precision = fim + lambda_prior
+    sign, logdet = jnp.linalg.slogdet(posterior_precision)
+    if not relative_to_prior:
+        return cast(jnp.ndarray, jnp.where(sign > 0, logdet, -1e12))
+
+    prior_sign, prior_logdet = jnp.linalg.slogdet(lambda_prior)
+    valid = (sign > 0) & (prior_sign > 0)
+    return cast(jnp.ndarray, jnp.where(valid, logdet - prior_logdet, -1e12))
