@@ -14,7 +14,7 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
-    CameraSensor,
+    DetectorArray,
     Field,
     Grid,
     OpticalModule,
@@ -105,8 +105,8 @@ def main() -> None:
         dx_um=(work_grid.nx * work_grid.dx_um) / 5.0,
         dy_um=(work_grid.ny * work_grid.dy_um) / 2.0,
     )
-    detector_sensor = CameraSensor(
-        pixel_grid=detector_grid,
+    detector_array = DetectorArray(
+        detector_grid=detector_grid,
     )
 
     def build_module(raw_params: jnp.ndarray) -> OpticalModule:
@@ -120,7 +120,7 @@ def main() -> None:
             bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
             layers.append(PhaseMask(phase_map_rad=bounded_phase))
             layers.append(propagator)
-        return OpticalModule(layers=tuple(layers), sensor=detector_sensor)
+        return OpticalModule(layers=tuple(layers), sensor=detector_array)
 
     x_train, y_train, x_test, y_test = load_mnist(MNIST_CACHE_PATH)
     x_train = x_train[:TRAIN_SAMPLES]

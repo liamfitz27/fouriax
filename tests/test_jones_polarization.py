@@ -4,10 +4,10 @@ import pytest
 
 from fouriax.optics import (
     ASMPropagator,
+    DetectorArray,
     Field,
     FourierTransform,
     Grid,
-    IntensitySensor,
     JonesMatrixLayer,
     KJonesMatrixLayer,
     KSpacePropagator,
@@ -75,13 +75,17 @@ def test_jones_propagation_matches_scalar_per_component():
     )
 
 
-def test_intensity_sensor_channel_resolved_for_jones():
+def test_detector_array_channel_resolved_for_jones():
     grid = Grid.from_extent(nx=6, ny=4, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     field = Field.plane_wave_jones(grid=grid, spectrum=spectrum, ex=1.0 + 0.0j, ey=2.0j)
 
-    total = IntensitySensor(sum_wavelengths=False).measure(field)
-    by_channel = IntensitySensor(sum_wavelengths=False, channel_resolved=True).measure(field)
+    total = DetectorArray(detector_grid=grid, sum_wavelengths=False).measure(field)
+    by_channel = DetectorArray(
+        detector_grid=grid,
+        sum_wavelengths=False,
+        channel_resolved=True,
+    ).measure(field)
 
     assert total.shape == (1, 4, 6)
     assert by_channel.shape == (1, 2, 4, 6)

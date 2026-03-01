@@ -7,11 +7,11 @@ from fouriax.optics import (
     AmplitudeMask,
     ASMPropagator,
     ComplexMask,
+    DetectorArray,
     Field,
-    FieldReadout,
+    FieldMonitor,
     FourierTransform,
     Grid,
-    IntensitySensor,
     InverseFourierTransform,
     KSpacePhaseMask,
     OpticalModule,
@@ -83,7 +83,7 @@ def test_propagation_layer_matches_direct_propagator():
     )
 
 
-def test_intensity_sensor_and_field_readout_representations():
+def test_detector_array_and_field_monitor_representations():
     grid = Grid.from_extent(nx=4, ny=4, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_array(jnp.array([0.532, 0.633], dtype=jnp.float32))
     data = jnp.stack(
@@ -95,14 +95,14 @@ def test_intensity_sensor_and_field_readout_representations():
     )
     field = Field(data=data, grid=grid, spectrum=spectrum)
 
-    intensity = IntensitySensor(sum_wavelengths=False).measure(field)
-    summed = IntensitySensor(sum_wavelengths=True).measure(field)
+    intensity = DetectorArray(detector_grid=grid, sum_wavelengths=False).measure(field)
+    summed = DetectorArray(detector_grid=grid, sum_wavelengths=True).measure(field)
     np.testing.assert_allclose(np.asarray(intensity[0]), np.ones(grid.shape), atol=1e-6)
     np.testing.assert_allclose(np.asarray(intensity[1]), 4.0 * np.ones(grid.shape), atol=1e-6)
     np.testing.assert_allclose(np.asarray(summed), 5.0 * np.ones(grid.shape), atol=1e-6)
 
-    real_imag = FieldReadout(representation="real_imag").measure(field)
-    amp_phase = FieldReadout(representation="amplitude_phase").measure(field)
+    real_imag = FieldMonitor(representation="real_imag").read(field)
+    amp_phase = FieldMonitor(representation="amplitude_phase").read(field)
     assert real_imag.shape == (2, 4, 4, 2)
     assert amp_phase.shape == (2, 4, 4, 2)
 
@@ -179,7 +179,7 @@ def test_hybrid_spatial_k_stack_tracks_gradients():
                     na_limit=None,
                 ),
             ),
-            sensor=IntensitySensor(sum_wavelengths=True),
+            sensor=DetectorArray(detector_grid=grid, sum_wavelengths=True),
         )
         measured = module.measure(field_in)
         return jnp.mean((measured - target) ** 2)

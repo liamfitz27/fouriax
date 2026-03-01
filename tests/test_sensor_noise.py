@@ -3,10 +3,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from fouriax.optics import (
+    Detector,
+    DetectorArray,
     Field,
     GaussianNoise,
     Grid,
-    IntensitySensor,
     OpticalModule,
     PoissonGaussianNoise,
     PoissonNoise,
@@ -20,9 +21,19 @@ def _plane_wave_field(*, amplitude: float = 2.0, n: int = 8) -> Field:
     return Field.plane_wave(grid=grid, spectrum=spectrum, amplitude=amplitude)
 
 
-def test_intensity_sensor_noise_model_is_opt_in_via_key():
+def test_detector_integrates_region_mask():
+    field = _plane_wave_field(amplitude=2.0, n=4)
+    region_mask = jnp.zeros(field.grid.shape, dtype=jnp.float32).at[:2, :2].set(1.0)
+    detector = Detector(region_mask=region_mask, sum_wavelengths=True)
+
+    measured = detector.measure(field)
+    np.testing.assert_allclose(np.asarray(measured), 16.0, atol=1e-6)
+
+
+def test_detector_array_noise_model_is_opt_in_via_key():
     field = _plane_wave_field(amplitude=2.0)
-    sensor = IntensitySensor(
+    sensor = DetectorArray(
+        detector_grid=field.grid,
         sum_wavelengths=True,
         noise_model=PoissonNoise(count_scale=100.0),
     )
@@ -32,9 +43,10 @@ def test_intensity_sensor_noise_model_is_opt_in_via_key():
     np.testing.assert_allclose(np.asarray(clean), expected, atol=1e-6)
 
 
-def test_intensity_sensor_poisson_noise_is_reproducible_for_same_key():
+def test_detector_array_poisson_noise_is_reproducible_for_same_key():
     field = _plane_wave_field(amplitude=2.0)
-    sensor = IntensitySensor(
+    sensor = DetectorArray(
+        detector_grid=field.grid,
         sum_wavelengths=True,
         noise_model=PoissonNoise(count_scale=250.0),
     )
@@ -49,7 +61,8 @@ def test_intensity_sensor_poisson_noise_is_reproducible_for_same_key():
 
 def test_gaussian_noise_zero_std_matches_clean_measurement():
     field = _plane_wave_field(amplitude=1.5)
-    sensor = IntensitySensor(
+    sensor = DetectorArray(
+        detector_grid=field.grid,
         sum_wavelengths=True,
         noise_model=GaussianNoise(std=0.0),
     )
@@ -92,15 +105,16 @@ def test_noise_model_analytic_covariance_and_precision_are_diagonal():
     )
 
 
-def test_optical_module_measure_forwards_key_to_sensor():
+def test_optical_module_measure_forwards_key_to_detector():
     field = _plane_wave_field(amplitude=1.0)
-    sensor = IntensitySensor(
+    detector = DetectorArray(
+        detector_grid=field.grid,
         sum_wavelengths=True,
         noise_model=PoissonNoise(count_scale=50.0),
     )
-    module = OpticalModule(layers=(), sensor=sensor)
+    module = OpticalModule(layers=(), sensor=detector)
     key = jax.random.PRNGKey(7)
 
-    direct = sensor.measure(field, key=key)
+    direct = detector.measure(field, key=key)
     via_module = module.measure(field, key=key)
     np.testing.assert_array_equal(np.asarray(via_module), np.asarray(direct))

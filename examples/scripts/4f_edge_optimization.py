@@ -12,8 +12,8 @@ import numpy as np
 import optax
 
 from fouriax.optics import (
-    CameraSensor,
     ComplexMask,
+    DetectorArray,
     Field,
     Grid,
     OpticalModule,
@@ -111,7 +111,7 @@ def main() -> None:
                 ComplexMask(phase_map_rad=phase),
                 prop, lens, prop,
             ),
-            sensor=CameraSensor(pixel_grid=grid),
+            sensor=DetectorArray(detector_grid=grid),
         )
 
     #%% Training Data
