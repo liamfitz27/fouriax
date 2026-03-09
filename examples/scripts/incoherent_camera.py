@@ -1,8 +1,10 @@
 """Incoherent camera imaging example using IncoherentImager."""
 
-#%% Imports
+# %% Imports
 from __future__ import annotations
 
+# %% Paths and Parameters
+import argparse
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -20,25 +22,42 @@ from fouriax.optics import (
     ThinLens,
 )
 
-#%% Paths and Parameters
-ARTIFACTS_DIR = Path("artifacts")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Incoherent Camera Example")
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--wavelength-um", type=float, default=0.532)
+    parser.add_argument("--grid-n", type=int, default=192)
+    parser.add_argument("--grid-dx-um", type=float, default=1.0)
+    parser.add_argument("--focal-length-um", type=float, default=900.0)
+    parser.add_argument("--aperture-diameter-um", type=float, default=90.0)
+    parser.add_argument("--sensor-size-px", type=int, default=96)
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 PLOT_PATH = ARTIFACTS_DIR / "incoherent_camera.png"
 
-WAVELENGTH_UM = 0.532
-GRID_N = 192
-GRID_DX_UM = 1.0
-FOCAL_LENGTH_UM = 900.0
-APERTURE_DIAMETER_UM = 90.0
-SENSOR_SIZE_PX = 96
+WAVELENGTH_UM = ARGS.wavelength_um
+GRID_N = ARGS.grid_n
+GRID_DX_UM = ARGS.grid_dx_um
+FOCAL_LENGTH_UM = ARGS.focal_length_um
+APERTURE_DIAMETER_UM = ARGS.aperture_diameter_um
+SENSOR_SIZE_PX = ARGS.sensor_size_px
+PLOT = not ARGS.no_plot
 
-#%% Helper Functions
+
+# %% Helper Functions
 def _make_object_intensity(grid: Grid) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     r = jnp.sqrt(x * x + y * y)
     disk = (r <= 20.0).astype(jnp.float32)
     ring = ((r >= 32.0) & (r <= 40.0)).astype(jnp.float32)
     bars = (jnp.cos(2.0 * jnp.pi * x / 9.0) > 0.0).astype(jnp.float32)
-    envelope = jnp.exp(-(r / 48.0) ** 2)
+    envelope = jnp.exp(-((r / 48.0) ** 2))
     return jnp.clip(0.05 + 0.45 * disk + 0.25 * ring + 0.25 * bars * envelope, 0.0, 1.0)
 
 
@@ -50,7 +69,7 @@ def _center_crop(image: np.ndarray, size_px: int) -> np.ndarray:
 
 
 def main() -> None:
-    #%% Setup
+    # %% Setup
     grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
     spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
 
@@ -99,7 +118,7 @@ def main() -> None:
     module_psf = OpticalModule(layers=(imager_psf,), sensor=detector_array)
     module_otf = OpticalModule(layers=(imager_otf,), sensor=detector_array)
 
-    #%% Evaluation
+    # %% Evaluation
     image_psf = np.asarray(module_psf.measure(field_in))
     image_otf = np.asarray(module_otf.measure(field_in))
     crop_psf = _center_crop(image_psf, size_px=SENSOR_SIZE_PX)
@@ -116,33 +135,34 @@ def main() -> None:
     print(f"PSF/OTF parity MSE (full)={parity_mse_full:.3e}")
     print(f"PSF/OTF parity MSE (crop)={parity_mse_crop:.3e}")
 
-    #%% Plot Results
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+    # %% Plot Results
+    if PLOT:
+        ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    psf = np.asarray(imager_psf.build_psf(field_in))[0]
-    psf = psf / (np.max(psf) + 1e-12)
+        psf = np.asarray(imager_psf.build_psf(field_in))[0]
+        psf = psf / (np.max(psf) + 1e-12)
 
-    fig, axes = plt.subplots(2, 3, figsize=(13, 8))
-    ax = axes.ravel()
-    ax[0].imshow(np.asarray(object_intensity), cmap="gray")
-    ax[0].set_title("Object Intensity")
-    ax[1].imshow(psf, cmap="magma")
-    ax[1].set_title("Derived PSF (normalized)")
-    ax[2].imshow(np.log10(psf + 1e-8), cmap="viridis")
-    ax[2].set_title("log10(PSF + 1e-8)")
-    ax[3].imshow(image_psf, cmap="magma")
-    ax[3].set_title("Incoherent Image (PSF mode)")
-    ax[4].imshow(image_otf, cmap="magma")
-    ax[4].set_title("Incoherent Image (OTF mode)")
-    ax[5].imshow(crop_psf, cmap="magma")
-    ax[5].set_title("Sensor ROI Crop")
-    for a in ax:
-        a.set_xticks([])
-        a.set_yticks([])
-    fig.suptitle("Incoherent Camera Imaging (IncoherentImager)", fontsize=14, y=0.99)
-    fig.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig)
-    print(f"saved: {PLOT_PATH}")
+        fig, axes = plt.subplots(2, 3, figsize=(13, 8))
+        ax = axes.ravel()
+        ax[0].imshow(np.asarray(object_intensity), cmap="gray")
+        ax[0].set_title("Object Intensity")
+        ax[1].imshow(psf, cmap="magma")
+        ax[1].set_title("Derived PSF (normalized)")
+        ax[2].imshow(np.log10(psf + 1e-8), cmap="viridis")
+        ax[2].set_title("log10(PSF + 1e-8)")
+        ax[3].imshow(image_psf, cmap="magma")
+        ax[3].set_title("Incoherent Image (PSF mode)")
+        ax[4].imshow(image_otf, cmap="magma")
+        ax[4].set_title("Incoherent Image (OTF mode)")
+        ax[5].imshow(crop_psf, cmap="magma")
+        ax[5].set_title("Sensor ROI Crop")
+        for a in ax:
+            a.set_xticks([])
+            a.set_yticks([])
+        fig.suptitle("Incoherent Camera Imaging (IncoherentImager)", fontsize=14, y=0.99)
+        fig.savefig(PLOT_PATH, dpi=150)
+        plt.close(fig)
+        print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

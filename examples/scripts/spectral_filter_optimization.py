@@ -1,8 +1,10 @@
 """Optimize spectral filters and reconstruction MLP for hyperspectral sensing."""
 
-#%% Imports
+# %% Imports
 from __future__ import annotations
 
+# %% Paths and Parameters
+import argparse
 import json
 from pathlib import Path
 from typing import Sequence
@@ -32,35 +34,71 @@ from fouriax.optim import (
     train_val_split,
 )
 
-#%% Paths and Parameters
-DATA_PATH = Path("data/meta_atoms/indian_pines/Indian_pines.mat")
-WAVELENGTHS_PATH = Path("data/meta_atoms/indian_pines/wavelengths.npy")
-ARTIFACTS_DIR = Path("artifacts")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Spectral Filter Optimization Example")
+    parser.add_argument(
+        "--data-path", type=str, default="data/meta_atoms/indian_pines/Indian_pines.mat"
+    )
+    parser.add_argument(
+        "--wavelengths-path", type=str, default="data/meta_atoms/indian_pines/wavelengths.npy"
+    )
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--spectral-slice-start", type=int, default=40)
+    parser.add_argument("--spectral-slice-stop", type=int, default=190)
+    parser.add_argument("--array-size", type=int, default=3)
+    parser.add_argument("--photon-scale", type=float, default=200.0)
+
+    # Proxy Config
+    parser.add_argument("--pca-components", type=int, default=16)
+    parser.add_argument("--proxy-batch-size", type=int, default=512)
+    parser.add_argument("--proxy-epochs", type=int, default=100)
+    parser.add_argument("--proxy-lr", type=float, default=5e-3)
+
+    # Full Recon Config
+    parser.add_argument("--val-fraction", type=float, default=0.05)
+    parser.add_argument("--recon-batch-size", type=int, default=512)
+    parser.add_argument("--recon-epochs", type=int, default=100)
+    parser.add_argument("--recon-decoder-lr", type=float, default=8e-4)
+    parser.add_argument("--recon-filter-lr", type=float, default=8e-2)
+    parser.add_argument("--smoothness-reg", type=float, default=0.02)
+    parser.add_argument("--unity-reg", type=float, default=1e-5)
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+DATA_PATH = Path(ARGS.data_path)
+WAVELENGTHS_PATH = Path(ARGS.wavelengths_path)
+ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 PLOT_PATH = ARTIFACTS_DIR / "spectral_filter_overview.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "spectral_filter_summary.json"
 
-SEED = 0
-SPECTRAL_SLICE_START = 40
-SPECTRAL_SLICE_STOP = 190
-ARRAY_SIZE = 3
-PHOTON_SCALE = 200.0
+SEED = ARGS.seed
+SPECTRAL_SLICE_START = ARGS.spectral_slice_start
+SPECTRAL_SLICE_STOP = ARGS.spectral_slice_stop
+ARRAY_SIZE = ARGS.array_size
+PHOTON_SCALE = ARGS.photon_scale
 
-PCA_COMPONENTS = 16
-PROXY_BATCH_SIZE = 512
-PROXY_EPOCHS = 100
-PROXY_LR = 5e-3
+PCA_COMPONENTS = ARGS.pca_components
+PROXY_BATCH_SIZE = ARGS.proxy_batch_size
+PROXY_EPOCHS = ARGS.proxy_epochs
+PROXY_LR = ARGS.proxy_lr
 
-VAL_FRACTION = 0.05
-RECON_BATCH_SIZE = 512
-RECON_EPOCHS = 100
-RECON_DECODER_LR = 8e-4
-RECON_FILTER_LR = 8e-2
-SMOOTHNESS_REG = 0.02
-UNITY_REG = 1e-5
+VAL_FRACTION = ARGS.val_fraction
+RECON_BATCH_SIZE = ARGS.recon_batch_size
+RECON_EPOCHS = ARGS.recon_epochs
+RECON_DECODER_LR = ARGS.recon_decoder_lr
+RECON_FILTER_LR = ARGS.recon_filter_lr
+SMOOTHNESS_REG = ARGS.smoothness_reg
+UNITY_REG = ARGS.unity_reg
 HIDDEN_DIMS = (128, 256, 384, 384)
+PLOT = not ARGS.no_plot
 
 
-#%% MLP Decoder Model
+# %% MLP Decoder Model
 class SpectralReconMLP(nn.Module):
     hidden_dims: Sequence[int]
     out_dim: int
@@ -73,7 +111,7 @@ class SpectralReconMLP(nn.Module):
         return nn.Dense(self.out_dim)(x)
 
 
-#%% Helper Functions
+# %% Helper Functions
 def load_indian_pines(
     DATA_PATH: Path,
     WAVELENGTHS_PATH: Path,
@@ -116,7 +154,7 @@ def filter_smoothness(raw_filter: jnp.ndarray) -> jnp.ndarray:
 
 
 def main() -> None:
-    #%% Setup
+    # %% Setup
     spectra_full, wavelengths_nm = load_indian_pines(
         DATA_PATH,
         WAVELENGTHS_PATH,
@@ -134,7 +172,7 @@ def main() -> None:
     val = jnp.asarray(val_full, dtype=jnp.float32)
 
     n_wavelengths = int(train.shape[1])
-    num_filters = int(ARRAY_SIZE ** 2)
+    num_filters = int(ARRAY_SIZE**2)
     array_size = int(round(np.sqrt(num_filters)))
     grid = Grid.from_extent(nx=array_size, ny=array_size, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_array(jnp.asarray(wavelengths_nm * 1e-3, dtype=jnp.float32))
@@ -163,9 +201,7 @@ def main() -> None:
 
     def build_filter_module(raw_filter_params: jnp.ndarray) -> OpticalModule:
         a = filter_intensity_matrix(raw_filter_params)
-        amp_map = jnp.sqrt(jnp.clip(a.T, 0.0, 1.0)).reshape(
-            (spectrum.size, array_size, array_size)
-        )
+        amp_map = jnp.sqrt(jnp.clip(a.T, 0.0, 1.0)).reshape((spectrum.size, array_size, array_size))
         return OpticalModule(
             layers=(),
             sensor=DetectorArray(
@@ -215,12 +251,17 @@ def main() -> None:
             )(image_clean, noise_keys)
         return image.reshape((image.shape[0], -1))
 
-
-    #%% Proxy Loss and Optimization
+    # %% Proxy Loss and Optimization
     def batch_proxy_loss(
         raw_filter: jnp.ndarray,
-        batch_spectra: np.ndarray | jnp.ndarray,
+        batch_spectra: tuple[np.ndarray | jnp.ndarray] | np.ndarray | jnp.ndarray,
     ) -> jnp.ndarray:
+        if isinstance(batch_spectra, tuple):
+            if len(batch_spectra) != 1:
+                raise ValueError(
+                    "proxy optimization expects a single spectra array per minibatch"
+                )
+            batch_spectra = batch_spectra[0]
         a = filter_intensity_matrix(raw_filter)
         ab = a @ basis
         batch_spectra = jnp.asarray(batch_spectra, dtype=jnp.float32)
@@ -237,9 +278,8 @@ def main() -> None:
                 )
             )(batch_coeffs)
         )
-        regularization = (
-            SMOOTHNESS_REG * filter_smoothness(raw_filter)
-            + UNITY_REG * jnp.mean((filter_intensity_matrix(raw_filter) - 1.0) ** 2)
+        regularization = SMOOTHNESS_REG * filter_smoothness(raw_filter) + UNITY_REG * jnp.mean(
+            (filter_intensity_matrix(raw_filter) - 1.0) ** 2
         )
         return -d_opt + regularization
 
@@ -255,7 +295,7 @@ def main() -> None:
         seed=SEED,
     )
 
-    #%% Hybrid Model Loss and Optimization
+    # %% Hybrid Model Loss and Optimization
     raw_filter = proxy_result.params_result.best_params
     best_proxy_loss = proxy_result.params_result.best_metric_value
     recon_model = SpectralReconMLP(hidden_dims=HIDDEN_DIMS, out_dim=n_wavelengths)
@@ -293,9 +333,8 @@ def main() -> None:
             batch_noise_keys,
         )
         recon_mse = jnp.mean((x_hat - batch_spectra) ** 2)
-        regularization = (
-            SMOOTHNESS_REG * filter_smoothness(optical_params)
-            + UNITY_REG * jnp.mean((filter_intensity_matrix(optical_params) - 1.0) ** 2)
+        regularization = SMOOTHNESS_REG * filter_smoothness(optical_params) + UNITY_REG * jnp.mean(
+            (filter_intensity_matrix(optical_params) - 1.0) ** 2
         )
         return recon_mse + regularization
 
@@ -313,7 +352,7 @@ def main() -> None:
         seed=SEED,
     )
 
-    #%% Evaluation
+    # %% Evaluation
     history_steps = [record.step for record in recon_result.params_result.val_history]
     history_val = [record.metrics["val_loss"] for record in recon_result.params_result.val_history]
     history_train = [recon_result.params_result.train_loss_history[step] for step in history_steps]
@@ -392,77 +431,77 @@ def main() -> None:
         json.dump(summary, f, indent=2)
     print(f"saved: {SUMMARY_PATH}")
 
-    #%% Plot Results
-    wavelengths_np = np.asarray(wavelengths_nm)
-    n_examples = min(4, val.shape[0])
-    fig, axes = plt.subplots(2, 2, figsize=(12, 9))
+    # %% Plot Results
+    if PLOT:
+        wavelengths_np = np.asarray(wavelengths_nm)
+        n_examples = min(4, val.shape[0])
+        fig, axes = plt.subplots(2, 2, figsize=(12, 9))
 
-    for i in range(num_filters):
-        axes[0, 0].plot(wavelengths_np, filt_amp_opt[i], linewidth=1.5)
-    axes[0, 0].set_title(
-        f"Optimized {ARRAY_SIZE}x{ARRAY_SIZE} Filter Amplitudes "
-        f"({num_filters} channels)"
-    )
-    axes[0, 0].set_xlabel("Wavelength (nm)")
-    axes[0, 0].set_ylabel("Amplitude Transmission")
-    axes[0, 0].grid(alpha=0.3)
-
-    ax = axes[0, 1]
-    ax.plot(history_steps, history_train, label="Train loss")
-    ax.plot(history_steps, history_val, label="Val loss")
-    ax.set_title("Reconstruction Loss History")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Loss")
-    ax.grid(alpha=0.3)
-    ax.legend(loc="best")
-    ax.set_yscale("log")
-
-    random_indices = jax.random.choice(key, val.shape[0], (n_examples,), replace=False)
-    for i in random_indices:
-        idx = int(i)
-        (line,) = axes[1, 0].plot(
-            wavelengths_np,
-            val[idx],
-            alpha=0.9,
-            linewidth=0.6,
-            label=f"example {idx}",
+        for i in range(num_filters):
+            axes[0, 0].plot(wavelengths_np, filt_amp_opt[i], linewidth=1.5)
+        axes[0, 0].set_title(
+            f"Optimized {ARRAY_SIZE}x{ARRAY_SIZE} Filter Amplitudes ({num_filters} channels)"
         )
-        axes[1, 0].plot(
-            wavelengths_np,
-            np.asarray(final_x_val_hat[idx]),
-            alpha=0.9,
-            linewidth=0.6,
-            linestyle="--",
-            color=line.get_color(),
+        axes[0, 0].set_xlabel("Wavelength (nm)")
+        axes[0, 0].set_ylabel("Amplitude Transmission")
+        axes[0, 0].grid(alpha=0.3)
+
+        ax = axes[0, 1]
+        ax.plot(history_steps, history_train, label="Train loss")
+        ax.plot(history_steps, history_val, label="Val loss")
+        ax.set_title("Reconstruction Loss History")
+        ax.set_xlabel("Step")
+        ax.set_ylabel("Loss")
+        ax.grid(alpha=0.3)
+        ax.legend(loc="best")
+        ax.set_yscale("log")
+
+        random_indices = jax.random.choice(key, val.shape[0], (n_examples,), replace=False)
+        for i in random_indices:
+            idx = int(i)
+            (line,) = axes[1, 0].plot(
+                wavelengths_np,
+                val[idx],
+                alpha=0.9,
+                linewidth=0.6,
+                label=f"example {idx}",
+            )
+            axes[1, 0].plot(
+                wavelengths_np,
+                np.asarray(final_x_val_hat[idx]),
+                alpha=0.9,
+                linewidth=0.6,
+                linestyle="--",
+                color=line.get_color(),
+            )
+        axes[1, 0].set_title("Validation Spectra: target (solid) vs MLP recon (dashed)")
+        axes[1, 0].set_xlabel("Wavelength (nm)")
+        axes[1, 0].set_ylabel("Reflectance / Intensity")
+        axes[1, 0].grid(alpha=0.3)
+        axes[1, 0].legend()
+
+        axes[1, 1].axis("off")
+        axes[1, 1].text(
+            0.02,
+            0.98,
+            (
+                f"Proxy objective: d_opt\n"
+                f"PCA comps: {pca_components}\n"
+                f"Proxy loss: {best_proxy_loss:.4f}\n"
+                f"Val MSE: {val_mse:.6f}\n"
+                f"Final val MSE: {final_val_mse:.6f}\n"
+                f"Cond #: {float(svals[0] / max(svals[-1], 1e-12)):.2e}"
+            ),
+            va="top",
+            ha="left",
+            fontsize=10,
+            family="monospace",
         )
-    axes[1, 0].set_title("Validation Spectra: target (solid) vs MLP recon (dashed)")
-    axes[1, 0].set_xlabel("Wavelength (nm)")
-    axes[1, 0].set_ylabel("Reflectance / Intensity")
-    axes[1, 0].grid(alpha=0.3)
-    axes[1, 0].legend()
 
-    axes[1, 1].axis("off")
-    axes[1, 1].text(
-        0.02,
-        0.98,
-        (
-            f"Proxy objective: d_opt\n"
-            f"PCA comps: {pca_components}\n"
-            f"Proxy loss: {best_proxy_loss:.4f}\n"
-            f"Val MSE: {val_mse:.6f}\n"
-            f"Final val MSE: {final_val_mse:.6f}\n"
-            f"Cond #: {float(svals[0] / max(svals[-1], 1e-12)):.2e}"
-        ),
-        va="top",
-        ha="left",
-        fontsize=10,
-        family="monospace",
-    )
-
-    fig.tight_layout()
-    fig.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig)
-    print(f"saved: {PLOT_PATH}")
+        fig.tight_layout()
+        fig.savefig(PLOT_PATH, dpi=150)
+        plt.close(fig)
+        print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

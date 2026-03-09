@@ -1,8 +1,10 @@
 """Optimize a phase-only coherent hologram for a red-logo binary target."""
 
-#%% Imports
+# %% Imports
 from __future__ import annotations
 
+# %% Paths and Parameters
+import argparse
 from pathlib import Path
 
 import jax
@@ -22,24 +24,47 @@ from fouriax.optics import (
 )
 from fouriax.optim import optimize_optical_module
 
-#%% Paths and Parameters
-IMAGE_PATH = Path("/Users/liam/Downloads/logo.jpg")
-ARTIFACTS_DIR = Path("artifacts")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Coherent Hologram Logo Example")
+    parser.add_argument("--image-path", type=str, default="/Users/liam/Downloads/logo.jpg")
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--nx", type=int, default=128)
+    parser.add_argument("--ny", type=int, default=128)
+    parser.add_argument("--dx-um", type=float, default=1.0)
+    parser.add_argument("--dy-um", type=float, default=1.0)
+    parser.add_argument("--wavelength-um", type=float, default=0.532)
+    parser.add_argument("--distance-um", type=float, default=1200.0)
+    parser.add_argument("--nyquist-factor", type=float, default=2.0)
+    parser.add_argument("--min-padding-factor", type=float, default=2.0)
+    parser.add_argument("--steps", type=int, default=400)
+    parser.add_argument("--lr", type=float, default=0.03)
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+IMAGE_PATH = Path(ARGS.image_path)
+ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 PLOT_PATH = ARTIFACTS_DIR / "hologram_coherent_logo_overview.png"
 
-SEED = 0
-NX = 128
-NY = 128
-DX_UM = 1.0
-DY_UM = 1.0
-WAVELENGTH_UM = 0.532
-DISTANCE_UM = 1200.0
-NYQUIST_FACTOR = 2.0
-MIN_PADDING_FACTOR = 2.0
-STEPS = 400
-LR = 0.03
+SEED = ARGS.seed
+NX = ARGS.nx
+NY = ARGS.ny
+DX_UM = ARGS.dx_um
+DY_UM = ARGS.dy_um
+WAVELENGTH_UM = ARGS.wavelength_um
+DISTANCE_UM = ARGS.distance_um
+NYQUIST_FACTOR = ARGS.nyquist_factor
+MIN_PADDING_FACTOR = ARGS.min_padding_factor
+STEPS = ARGS.steps
+LR = ARGS.lr
+PLOT = not ARGS.no_plot
 
-#%% Helper Functions
+
+# %% Helper Functions
 def load_logo_target(path: Path, grid: Grid) -> jnp.ndarray:
     """Load image and convert to binary target: white->0, red-logo->1."""
     img = Image.open(path).convert("RGB").resize((grid.nx, grid.ny), Image.Resampling.BILINEAR)
@@ -55,7 +80,7 @@ def load_logo_target(path: Path, grid: Grid) -> jnp.ndarray:
 
 
 def main() -> None:
-    #%% Setup
+    # %% Setup
     grid = Grid.from_extent(nx=NX, ny=NY, dx_um=DX_UM, dy_um=DY_UM)
     spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
     target = load_logo_target(IMAGE_PATH, grid=grid)
@@ -79,7 +104,7 @@ def main() -> None:
             )
         )
 
-    #%% Loss Function and Optimization
+    # %% Loss Function and Optimization
     def loss_fn(raw_phase: jnp.ndarray) -> jnp.ndarray:
         module = build_module(raw_phase)
         intensity = module.forward(field_in).intensity()[0]
@@ -98,34 +123,35 @@ def main() -> None:
         log_every=50,
     )
 
-    #%% Evaluation
+    # %% Evaluation
     phase_opt = 2.0 * jnp.pi * jax.nn.sigmoid(result.best_params)
     recon = result.best_module.forward(field_in).intensity()[0]
     recon_norm = recon / jnp.maximum(jnp.max(recon), 1e-12)
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    #%% Plot Results
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8))
-    axes[0, 0].imshow(np.asarray(target), cmap="gray", vmin=0.0, vmax=1.0)
-    axes[0, 0].set_title("Target (red->1, white->0)")
-    axes[0, 1].imshow(np.asarray(recon_norm), cmap="magma", vmin=0.0, vmax=1.0)
-    axes[0, 1].set_title("Reconstruction (normalized)")
-    phase_im = axes[1, 0].imshow(np.asarray(phase_opt), cmap="twilight")
-    axes[1, 0].set_title("Optimized Phase (rad)")
-    plt.colorbar(phase_im, ax=axes[1, 0], fraction=0.046, pad=0.04)
-    axes[1, 1].plot(result.history)
-    axes[1, 1].set_title("Loss History")
-    axes[1, 1].set_xlabel("Step")
-    axes[1, 1].set_ylabel("MSE")
-    axes[1, 1].grid(alpha=0.3)
-    for ax in (axes[0, 0], axes[0, 1], axes[1, 0]):
-        ax.set_xticks([])
-        ax.set_yticks([])
-    fig.tight_layout()
-    fig.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig)
-    print(f"saved: {PLOT_PATH}")
+    # %% Plot Results
+    if PLOT:
+        fig, axes = plt.subplots(2, 2, figsize=(11, 8))
+        axes[0, 0].imshow(np.asarray(target), cmap="gray", vmin=0.0, vmax=1.0)
+        axes[0, 0].set_title("Target (red->1, white->0)")
+        axes[0, 1].imshow(np.asarray(recon_norm), cmap="magma", vmin=0.0, vmax=1.0)
+        axes[0, 1].set_title("Reconstruction (normalized)")
+        phase_im = axes[1, 0].imshow(np.asarray(phase_opt), cmap="twilight")
+        axes[1, 0].set_title("Optimized Phase (rad)")
+        plt.colorbar(phase_im, ax=axes[1, 0], fraction=0.046, pad=0.04)
+        axes[1, 1].plot(result.history)
+        axes[1, 1].set_title("Loss History")
+        axes[1, 1].set_xlabel("Step")
+        axes[1, 1].set_ylabel("MSE")
+        axes[1, 1].grid(alpha=0.3)
+        for ax in (axes[0, 0], axes[0, 1], axes[1, 0]):
+            ax.set_xticks([])
+            ax.set_yticks([])
+        fig.tight_layout()
+        fig.savefig(PLOT_PATH, dpi=150)
+        plt.close(fig)
+        print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

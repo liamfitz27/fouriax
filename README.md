@@ -61,6 +61,7 @@ Scripts live in `examples/scripts/` with matching notebooks in `examples/noteboo
 | Lens Optimization | `lens_optimization.py` | `lens_optimization.ipynb` | Learn a phase mask to focus a plane wave |
 | 4f Correlator | `4f_correlator.py` | `4f_correlator.ipynb` | Matched-filter cross-correlation in a 4f system |
 | 4f Edge Optimization | `4f_edge_optimization.py` | `4f_edge_optimization.ipynb` | Optimize a spiral phase filter for edge detection |
+| Hybrid Super-Resolution | `hybrid_super_resolution.py` | `hybrid_super_resolution.ipynb` | Co-design a coded optical front-end and CNN decoder for single-shot super-resolution |
 | Coherent Hologram | `hologram_coherent_logo.py` | `hologram_coherent_logo.ipynb` | Phase-only hologram via GS-style optimization |
 | Polarized Holography | `holography_polarized_dual.py` | `holography_polarized_dual.ipynb` | Dual-pattern holography with Jones polarization |
 | Incoherent Camera | `incoherent_camera.py` | `incoherent_camera.ipynb` | Shift-invariant incoherent imaging simulation |

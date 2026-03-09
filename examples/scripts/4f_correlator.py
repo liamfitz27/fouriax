@@ -5,9 +5,11 @@ filter H = F*{target} at the Fourier plane.  Compares the physical
 output to a direct FFT cross-correlation as ground truth.
 """
 
-#%% Imports
+# %% Imports
 from __future__ import annotations
 
+# %% Paths and Parameters
+import argparse
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -25,16 +27,31 @@ from fouriax.optics import (
     plan_propagation,
 )
 
-#%% Paths and Parameters
-ARTIFACTS_DIR = Path("artifacts")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="4f Correlator Example")
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--wavelength-um", type=float, default=0.532)
+    parser.add_argument("--n-medium", type=float, default=1.0)
+    parser.add_argument("--grid-n", type=int, default=128)
+    parser.add_argument("--grid-dx-um", type=float, default=2.0)
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 PLOT_PATH = ARTIFACTS_DIR / "4f_correlator.png"
 
-WAVELENGTH_UM = 0.532
-N_MEDIUM = 1.0
-GRID_N = 128
-GRID_DX_UM = 2.0
+WAVELENGTH_UM = ARGS.wavelength_um
+N_MEDIUM = ARGS.n_medium
+GRID_N = ARGS.grid_n
+GRID_DX_UM = ARGS.grid_dx_um
+PLOT = not ARGS.no_plot
 
-#%% Helper Functions
+
+# %% Helper Functions
 def _raw_correlate(scene: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
     """Ground-truth cross-correlation intensity via direct FFT."""
     f_scene = jnp.fft.fftn(jnp.fft.ifftshift(scene), axes=(-2, -1))
@@ -72,8 +89,9 @@ def _make_rect(grid: Grid, cx_f: float, cy_f: float, w_f: float, h_f: float) -> 
     """Binary rectangle; positions/sizes are fractions of grid half-extent."""
     half = grid.nx * grid.dx_um / 2.0
     x, y = grid.spatial_grid()
-    return ((jnp.abs(x - cx_f * half) <= w_f * half) &
-            (jnp.abs(y - cy_f * half) <= h_f * half)).astype(jnp.float32)
+    return (
+        (jnp.abs(x - cx_f * half) <= w_f * half) & (jnp.abs(y - cy_f * half) <= h_f * half)
+    ).astype(jnp.float32)
 
 
 def _build_scene(grid: Grid) -> jnp.ndarray:
@@ -92,12 +110,11 @@ def _build_target(grid: Grid) -> jnp.ndarray:
 
 
 def main() -> None:
-    #%% Setup
+    # %% Setup
     grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
     spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
     f_um = _sampling_matched_focal_length(grid)
-    print(f"f = {f_um:.1f} µm  |  (r_max/f)² = "
-          f"{_paraxial_validity_constraint_fom():.4f}")
+    print(f"f = {f_um:.1f} µm  |  (r_max/f)² = {_paraxial_validity_constraint_fom():.4f}")
 
     scene = _build_scene(grid)
     target = _build_target(grid)
@@ -115,14 +132,18 @@ def main() -> None:
 
     correlator = OpticalModule(
         layers=(
-            prop, lens, prop,
+            prop,
+            lens,
+            prop,
             ComplexMask(amplitude_map=amp, phase_map_rad=phase),
-            prop, lens, prop,
+            prop,
+            lens,
+            prop,
         ),
         sensor=DetectorArray(detector_grid=grid),
     )
 
-    #%% Evaluation
+    # %% Evaluation
     output_4f = np.asarray(correlator.measure(field_in))
     output_raw = np.asarray(_raw_correlate(scene, target))
 
@@ -132,32 +153,33 @@ def main() -> None:
     cc = float(np.corrcoef(out_4f_n.ravel(), out_raw_n.ravel())[0, 1])
     print(f"Correlation with ground truth: {cc:.4f}")
 
-    #%% Plot Results
-    fig, axes = plt.subplots(1, 4, figsize=(18, 4))
-    axes[0].imshow(np.asarray(scene), cmap="gray")
-    axes[0].set_title("Input scene")
-    axes[1].imshow(np.asarray(target), cmap="gray")
-    axes[1].set_title("Target pattern")
+    # %% Plot Results
+    if PLOT:
+        fig, axes = plt.subplots(1, 4, figsize=(18, 4))
+        axes[0].imshow(np.asarray(scene), cmap="gray")
+        axes[0].set_title("Input scene")
+        axes[1].imshow(np.asarray(target), cmap="gray")
+        axes[1].set_title("Target pattern")
 
-    for ax, img, title in zip(
-        axes[2:],
-        [out_4f_n, out_raw_n],
-        [f"Physical 4f correlator (ρ = {cc:.4f})", "Raw FFT correlation"],
-        strict=True,
-    ):
-        im = ax.imshow(img, cmap="hot")
-        ax.set_title(title)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        for ax, img, title in zip(
+            axes[2:],
+            [out_4f_n, out_raw_n],
+            [f"Physical 4f correlator (ρ = {cc:.4f})", "Raw FFT correlation"],
+            strict=True,
+        ):
+            im = ax.imshow(img, cmap="hot")
+            ax.set_title(title)
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
-    for ax in axes:
-        ax.set_xticks([])
-        ax.set_yticks([])
-    fig.tight_layout()
+        for ax in axes:
+            ax.set_xticks([])
+            ax.set_yticks([])
+        fig.tight_layout()
 
-    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
-    fig.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig)
-    print(f"saved: {PLOT_PATH}")
+        ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+        fig.savefig(PLOT_PATH, dpi=150)
+        plt.close(fig)
+        print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":
