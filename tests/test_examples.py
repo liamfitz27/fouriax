@@ -2,6 +2,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 EXAMPLES_DIR = Path("examples/scripts")
 LOGO_PATH = Path("data/logo.jpg")
 
@@ -98,6 +100,7 @@ def test_onn_mnist():
     )
 
 
+@pytest.mark.skip(reason="Sensitivity analysis example currently exceeds CI memory limits")
 def test_sensitivity_analysis():
     run_script("sensitivity_analysis.py", ["--grid-n", "32", "--no-plot"])
 
