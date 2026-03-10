@@ -1,4 +1,9 @@
-"""Fisher information, sensitivity analysis, and design optimality utilities."""
+"""Fisher information, sensitivity analysis, and design optimality utilities.
+
+Compute Jacobians, Fisher information matrices, Cramér–Rao bounds,
+D-optimality scores, sensitivity maps, and parameter tolerance
+estimates for optical measurement systems.
+"""
 
 from fouriax.analysis.fisher import (
     cramer_rao_bound,

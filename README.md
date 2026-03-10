@@ -4,6 +4,9 @@ Differentiable free-space optics for JAX.
 
 **fouriax** is a JAX library for simulating and optimizing coherent and incoherent optical systems with automatic differentiation. It provides composable layers for wave propagation, phase/amplitude modulation, polarization (Jones calculus), meta-atom lookup tables, and sensor readout — all fully traceable through JAX for gradient-based inverse design.
 
+> [!WARNING]
+> This project is almost entirely vibecoded. Expect rough edges, inconsistent design decisions, incomplete validation, and APIs that may change substantially.
+
 ## Features
 
 - **Composable optical stack** — build systems from `OpticalLayer` transforms composed in an `OpticalModule`, with explicit spatial ↔ k-space domain transitions via `FourierTransform` / `InverseFourierTransform`.
@@ -61,6 +64,7 @@ Scripts live in `examples/scripts/` with matching notebooks in `examples/noteboo
 | Lens Optimization | `lens_optimization.py` | `lens_optimization.ipynb` | Learn a phase mask to focus a plane wave |
 | 4f Correlator | `4f_correlator.py` | `4f_correlator.ipynb` | Matched-filter cross-correlation in a 4f system |
 | 4f Edge Optimization | `4f_edge_optimization.py` | `4f_edge_optimization.ipynb` | Optimize a spiral phase filter for edge detection |
+| Hybrid Super-Resolution | `hybrid_super_resolution.py` | `hybrid_super_resolution.ipynb` | Co-design a coded optical front-end and CNN decoder for single-shot super-resolution |
 | Coherent Hologram | `hologram_coherent_logo.py` | `hologram_coherent_logo.ipynb` | Phase-only hologram via GS-style optimization |
 | Polarized Holography | `holography_polarized_dual.py` | `holography_polarized_dual.ipynb` | Dual-pattern holography with Jones polarization |
 | Incoherent Camera | `incoherent_camera.py` | `incoherent_camera.ipynb` | Shift-invariant incoherent imaging simulation |
@@ -88,6 +92,8 @@ docs/              # Architecture, dev workflow, planned additions
 ```bash
 scripts/dev_setup.sh      # create .venv, install deps, set up pre-commit hooks
 scripts/tests_local.sh    # run ruff + mypy + pytest
+pip install -e ".[dev,docs]"
+python -m sphinx -b html docs docs/_build/html
 ```
 
 See `docs/DEVELOPMENT_WORKFLOW.md` for the full git flow and CI expectations.

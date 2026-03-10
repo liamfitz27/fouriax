@@ -1,8 +1,10 @@
 """Optimize dual-polarization coherent holography with separate phase maps."""
 
-#%% Imports
+# %% Imports
 from __future__ import annotations
 
+# %% Paths and Parameters
+import argparse
 from pathlib import Path
 
 import jax
@@ -22,25 +24,47 @@ from fouriax.optics import (
 )
 from fouriax.optim import optimize_optical_module
 
-#%% Paths and Parameters
-IMAGE_PATH = Path("/Users/liam/Downloads/logo.jpg")
-ARTIFACTS_DIR = Path("artifacts")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Polarized Holography Logo Example")
+    parser.add_argument("--image-path", type=str, default="/Users/liam/Downloads/logo.jpg")
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--nx", type=int, default=128)
+    parser.add_argument("--ny", type=int, default=128)
+    parser.add_argument("--dx-um", type=float, default=1.0)
+    parser.add_argument("--dy-um", type=float, default=1.0)
+    parser.add_argument("--wavelength-um", type=float, default=0.532)
+    parser.add_argument("--distance-um", type=float, default=1200.0)
+    parser.add_argument("--nyquist-factor", type=float, default=2.0)
+    parser.add_argument("--min-padding-factor", type=float, default=2.0)
+    parser.add_argument("--steps", type=int, default=400)
+    parser.add_argument("--lr", type=float, default=0.03)
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+IMAGE_PATH = Path(ARGS.image_path)
+ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 PLOT_PATH = ARTIFACTS_DIR / "holography_polarized_dual_overview.png"
 
-SEED = 0
-NX = 128
-NY = 128
-DX_UM = 1.0
-DY_UM = 1.0
-WAVELENGTH_UM = 0.532
-DISTANCE_UM = 1200.0
-NYQUIST_FACTOR = 2.0
-MIN_PADDING_FACTOR = 2.0
-STEPS = 400
-LR = 0.03
+SEED = ARGS.seed
+NX = ARGS.nx
+NY = ARGS.ny
+DX_UM = ARGS.dx_um
+DY_UM = ARGS.dy_um
+WAVELENGTH_UM = ARGS.wavelength_um
+DISTANCE_UM = ARGS.distance_um
+NYQUIST_FACTOR = ARGS.nyquist_factor
+MIN_PADDING_FACTOR = ARGS.min_padding_factor
+STEPS = ARGS.steps
+LR = ARGS.lr
+PLOT = not ARGS.no_plot
 
 
-#%% Helper Functions
+# %% Helper Functions
 def load_logo_target(path: Path, grid: Grid) -> jnp.ndarray:
     """Load image and convert to binary target: white->0, red-logo->1."""
     img = Image.open(path).convert("RGB").resize((grid.nx, grid.ny), Image.Resampling.BILINEAR)
@@ -53,7 +77,7 @@ def load_logo_target(path: Path, grid: Grid) -> jnp.ndarray:
 
 
 def main() -> None:
-    #%% Setup
+    # %% Setup
     if not IMAGE_PATH.exists():
         raise FileNotFoundError(f"image not found: {IMAGE_PATH}")
 
@@ -98,7 +122,7 @@ def main() -> None:
             )
         )
 
-    #%% Loss Function and Optimization
+    # %% Loss Function and Optimization
     def loss_fn(raw_phase: jnp.ndarray) -> jnp.ndarray:
         module = build_module(raw_phase)
         out = module.forward(field_in)
@@ -121,7 +145,7 @@ def main() -> None:
         log_every=50,
     )
 
-    #%% Evaluation
+    # %% Evaluation
     phase_opt = 2.0 * jnp.pi * jax.nn.sigmoid(result.best_params)
     out_opt = result.best_module.forward(field_in)
     component_intensity = out_opt.component_intensity()[0]
@@ -132,31 +156,32 @@ def main() -> None:
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    #%% Plot Results
-    fig, axes = plt.subplots(2, 3, figsize=(13, 8))
-    axes[0, 0].imshow(np.asarray(target_x), cmap="gray", vmin=0.0, vmax=1.0)
-    axes[0, 0].set_title("Target X (original)")
-    axes[0, 1].imshow(np.asarray(recon_x_norm), cmap="magma", vmin=0.0, vmax=1.0)
-    axes[0, 1].set_title("Recon X")
-    sx_im = axes[0, 2].imshow(np.asarray(phase_opt[0]), cmap="twilight")
-    axes[0, 2].set_title("Optimized Phase X (rad)")
-    plt.colorbar(sx_im, ax=axes[0, 2], fraction=0.046, pad=0.04)
+    # %% Plot Results
+    if PLOT:
+        fig, axes = plt.subplots(2, 3, figsize=(13, 8))
+        axes[0, 0].imshow(np.asarray(target_x), cmap="gray", vmin=0.0, vmax=1.0)
+        axes[0, 0].set_title("Target X (original)")
+        axes[0, 1].imshow(np.asarray(recon_x_norm), cmap="magma", vmin=0.0, vmax=1.0)
+        axes[0, 1].set_title("Recon X")
+        sx_im = axes[0, 2].imshow(np.asarray(phase_opt[0]), cmap="twilight")
+        axes[0, 2].set_title("Optimized Phase X (rad)")
+        plt.colorbar(sx_im, ax=axes[0, 2], fraction=0.046, pad=0.04)
 
-    axes[1, 0].imshow(np.asarray(target_y), cmap="gray", vmin=0.0, vmax=1.0)
-    axes[1, 0].set_title("Target Y (rotated 180 deg)")
-    axes[1, 1].imshow(np.asarray(recon_y_norm), cmap="magma", vmin=0.0, vmax=1.0)
-    axes[1, 1].set_title("Recon Y")
-    sy_im = axes[1, 2].imshow(np.asarray(phase_opt[1]), cmap="twilight")
-    axes[1, 2].set_title("Optimized Phase Y (rad)")
-    plt.colorbar(sy_im, ax=axes[1, 2], fraction=0.046, pad=0.04)
+        axes[1, 0].imshow(np.asarray(target_y), cmap="gray", vmin=0.0, vmax=1.0)
+        axes[1, 0].set_title("Target Y (rotated 180 deg)")
+        axes[1, 1].imshow(np.asarray(recon_y_norm), cmap="magma", vmin=0.0, vmax=1.0)
+        axes[1, 1].set_title("Recon Y")
+        sy_im = axes[1, 2].imshow(np.asarray(phase_opt[1]), cmap="twilight")
+        axes[1, 2].set_title("Optimized Phase Y (rad)")
+        plt.colorbar(sy_im, ax=axes[1, 2], fraction=0.046, pad=0.04)
 
-    for ax in axes.flatten():
-        ax.set_xticks([])
-        ax.set_yticks([])
-    fig.tight_layout()
-    fig.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig)
-    print(f"saved: {PLOT_PATH}")
+        for ax in axes.flatten():
+            ax.set_xticks([])
+            ax.set_yticks([])
+        fig.tight_layout()
+        fig.savefig(PLOT_PATH, dpi=150)
+        plt.close(fig)
+        print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

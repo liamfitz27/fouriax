@@ -21,10 +21,13 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
+import subprocess
 import sys
 import textwrap
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -174,6 +177,87 @@ def transform_script(source: str) -> TransformedScript:
     return TransformedScript(text=text)
 
 
+def compute_hash(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
+
+
+def strip_argparse_and_inline_defaults(code: str) -> str:
+    tree = ast.parse(code)
+    defaults = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+        ):
+            if not node.args:
+                continue
+            flag_node = node.args[0]
+            if not isinstance(flag_node, ast.Constant) or not isinstance(flag_node.value, str):
+                continue
+            flag = flag_node.value
+            if not flag.startswith("--"):
+                continue
+            dest = flag.lstrip("-").replace("-", "_")
+            
+            val_repr = "None"
+            for kw in node.keywords:
+                if kw.arg == "default":
+                    val_repr = ast.unparse(kw.value)
+                elif (
+                    kw.arg == "action"
+                    and isinstance(kw.value, ast.Constant)
+                    and getattr(kw.value, "value", None) == "store_true"
+                ):
+                    val_repr = "False"
+                elif (
+                    kw.arg == "action"
+                    and isinstance(kw.value, ast.Constant)
+                    and getattr(kw.value, "value", None) == "store_false"
+                ):
+                    val_repr = "True"
+            defaults[dest] = val_repr
+
+    if not defaults:
+        return code
+
+    lines = code.splitlines()
+    out = []
+    in_parse_args = False
+    for line in lines:
+        if line.startswith("import argparse"):
+            continue
+        if line.startswith("def parse_args()"):
+            in_parse_args = True
+            continue
+        if in_parse_args:
+            if line.strip() and not line.startswith(" ") and not line.startswith("\t"):
+                if not line.startswith("#"):
+                    in_parse_args = False
+            if in_parse_args:
+                continue
+
+        if not in_parse_args:
+            if line.startswith("ARGS = parse_args()"):
+                continue
+
+            def repl(m: re.Match) -> str:
+                return defaults.get(m.group(1), m.group(0))
+
+            new_line = re.sub(r"\bARGS\.([a-zA-Z0-9_]+)\b", repl, line)
+            new_line = new_line.replace("not False", "True").replace("not True", "False")
+
+            out.append(new_line)
+
+    cleaned = []
+    for line in out:
+        if not line.strip() and (not cleaned or not cleaned[-1].strip()):
+            continue
+        cleaned.append(line)
+
+    return "\n".join(cleaned).strip() + "\n"
+
+
 def _parse_marker_title(line: str) -> str | None:
     match = CELL_MARKER_PARSE_RE.match(line)
     if not match:
@@ -211,6 +295,10 @@ def script_to_cell_specs(source: str) -> list[ScriptCell]:
     if not any(CELL_MARKER_RE.match(line) for line in transformed.text.splitlines()):
         raise ValueError("No codebreaks detected (`#%%`). Add notebook cell markers to the script.")
     cells = _split_cells_by_markers(transformed.text)
+    
+    for cell in cells:
+        cell.code = strip_argparse_and_inline_defaults(cell.code)
+        
     cells = inject_repo_root_setup(cells)
     cells = inject_matplotlib_inline(cells)
     return cells
@@ -347,14 +435,25 @@ def update_notebook_code_cells(
     notebook_path: Path,
     code_cells: list[str],
     *,
-    clear_outputs: bool = True,
+    clear_outputs: bool = False,
+    execute: bool = False,
+    force_match: bool = False,
+    check: bool = False,
 ) -> bool:
     with notebook_path.open("r", encoding="utf-8") as f:
         nb = json.load(f)
+        
+    nb["nbformat"] = 4
+    nb["nbformat_minor"] = max(nb.get("nbformat_minor", 0), 5)
 
     cells = nb.get("cells", [])
     code_indices = [i for i, cell in enumerate(cells) if cell.get("cell_type") == "code"]
     if len(code_indices) != len(code_cells):
+        if check:
+            raise ValueError(
+                f"Code cell count mismatch in {notebook_path}. "
+                f"Notebook has {len(code_indices)} code cells, script has {len(code_cells)}."
+            )
         raise ValueError(
             f"Code cell count mismatch for {notebook_path}: "
             f"notebook has {len(code_indices)} code cells, generated {len(code_cells)}. "
@@ -362,12 +461,45 @@ def update_notebook_code_cells(
         )
 
     changed = False
+    needs_execute = False
     for cell_idx, code_text in zip(code_indices, code_cells, strict=True):
         cell = cells[cell_idx]
         new_source = _cell_source_lines(code_text)
+        new_hash = compute_hash("".join(new_source))
+
+        metadata = cell.setdefault("metadata", {})
+        existing_hash = metadata.get("fouriax_source_hash")
+
+        if check:
+            if existing_hash != new_hash:
+                raise ValueError(
+                    f"Hash mismatch in cell {cell_idx} of {notebook_path}. "
+                    "Notebook output is stale."
+                )
+
         if cell.get("source") != new_source:
             cell["source"] = new_source
             changed = True
+
+        if "id" not in cell:
+            cell["id"] = __import__("uuid").uuid4().hex[:8]
+            changed = True
+
+        is_missing_output = cell.get("execution_count") is None and not cell.get("outputs")
+
+        if existing_hash != new_hash:
+            needs_execute = True
+            if (
+                execute
+                or force_match
+                or clear_outputs
+                or (is_missing_output and existing_hash is None)
+            ):
+                metadata["fouriax_source_hash"] = new_hash
+                changed = True
+        elif is_missing_output:
+            needs_execute = True
+
         if clear_outputs:
             if cell.get("outputs"):
                 cell["outputs"] = []
@@ -376,17 +508,37 @@ def update_notebook_code_cells(
                 cell["execution_count"] = None
                 changed = True
 
+    if check:
+        return False
+
     if changed:
         with notebook_path.open("w", encoding="utf-8") as f:
             json.dump(nb, f, indent=1)
             f.write("\n")
-    return changed
 
+    if execute and needs_execute:
+        print(f"[executing] {notebook_path}")
+        subprocess.run(
+            [
+                "jupyter",
+                "nbconvert",
+                "--to",
+                "notebook",
+                "--execute",
+                "--inplace",
+                str(notebook_path),
+            ],
+            check=True,
+        )
+        return True
+
+    return changed
 
 def _markdown_title_cell(index: int, title: str | None) -> dict[str, object]:
     heading = f"## {index}" if not title else f"## {index}  {title}"
     return {
         "cell_type": "markdown",
+        "id": uuid.uuid4().hex[:8],
         "metadata": {},
         "source": [heading + "\n"],
     }
@@ -399,6 +551,7 @@ def create_notebook(notebook_path: Path, cell_specs: list[ScriptCell]) -> None:
         cells.append(
             {
                 "cell_type": "code",
+                "id": uuid.uuid4().hex[:8],
                 "execution_count": None,
                 "metadata": {},
                 "outputs": [],
@@ -484,9 +637,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Create the notebook if it does not already exist.",
     )
     parser.add_argument(
-        "--keep-outputs",
+        "--clear-outputs",
         action="store_true",
-        help="Do not clear outputs/execution counts in updated code cells.",
+        help="Clear outputs and execution counts in all updated notebooks.",
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Execute the notebook after updating it to produce fresh outputs.",
+    )
+    parser.add_argument(
+        "--force-match",
+        action="store_true",
+        help="Update fouriax_source_hash to match the new code without regenerating outputs.",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Fail if any notebook cell's code hash does not match its existing output hash.",
     )
     args = parser.parse_args(argv)
 
@@ -497,8 +665,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def _sync_one(script_path: Path, notebook_path: Path) -> None:
+        if args.check and not notebook_path.exists():
+            raise FileNotFoundError(f"Missing notebook for script: {notebook_path}")
+
         source = script_path.read_text(encoding="utf-8")
         cell_specs = script_to_cell_specs(source)
+        
         cell_specs = replace_plt_close_with_show(cell_specs)
         code_cells = [cell.code for cell in cell_specs]
         if not code_cells:
@@ -506,7 +678,6 @@ def main(argv: list[str] | None = None) -> int:
 
         if notebook_path.exists():
             if args.dry_run:
-                # Validate and compute change status without writing.
                 with notebook_path.open("r", encoding="utf-8") as f:
                     nb = json.load(f)
                 existing_code_cells = [
@@ -526,10 +697,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"[{status}] {script_path} -> {notebook_path}")
                 return
 
+            if args.check:
+                update_notebook_code_cells(
+                    notebook_path, code_cells, check=True
+                )
+                print(f"[check passed] {script_path} -> {notebook_path}")
+                return
+
             changed = update_notebook_code_cells(
                 notebook_path,
                 code_cells,
-                clear_outputs=not args.keep_outputs,
+                clear_outputs=args.clear_outputs,
+                execute=args.execute,
+                force_match=args.force_match,
             )
             status = "updated" if changed else "unchanged"
             print(f"[{status}] {script_path} -> {notebook_path}")

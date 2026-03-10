@@ -26,7 +26,25 @@ def _apply_optional_noise(
 
 @dataclass(frozen=True)
 class Detector(Sensor):
-    """Intensity detector integrated over one region on the field grid."""
+    """Intensity detector integrated over a single region of the field grid.
+
+    Computes total intensity within an optional spatial mask, optionally
+    summing over wavelengths and resolving polarisation channels.
+
+    The default output shape is a scalar per batch element (wavelengths
+    summed, channels merged).  Set ``sum_wavelengths=False`` to retain
+    the wavelength axis.  Set ``channel_resolved=True`` with Jones input
+    to preserve the ``(Ex, Ey)`` split.
+
+    Args:
+        region_mask: Spatial weighting mask with shape ``(ny, nx)``, or
+            ``None`` for a uniform mask covering the whole grid.
+        sum_wavelengths: Sum over the wavelength axis in the output.
+        channel_resolved: Preserve per-channel intensities for Jones
+            fields.
+        noise_model: Optional stochastic noise model applied during
+            sampling.
+    """
 
     region_mask: jnp.ndarray | None = None
     sum_wavelengths: bool = True
@@ -34,10 +52,21 @@ class Detector(Sensor):
     noise_model: SensorNoiseModel | None = None
 
     def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
+        """Return the detector output, optionally with sampled noise."""
         measured = self.expected(field)
         return _apply_optional_noise(measured, noise_model=self.noise_model, key=key)
 
     def expected(self, field: Field) -> jnp.ndarray:
+        """Return the deterministic detector signal before noise sampling.
+
+        Args:
+            field: Input field. K-space input is converted to spatial domain.
+
+        Returns:
+            Array with shape ``(*batch,)``, ``(*batch, num_wavelengths)``,
+            ``(*batch, 2)``, or ``(*batch, num_wavelengths, 2)`` depending on
+            ``sum_wavelengths`` and ``channel_resolved``.
+        """
         field_spatial = field.to_spatial()
         mask = self._resolved_region_mask(field_spatial)
         measured = IntensityMonitor(
@@ -49,6 +78,7 @@ class Detector(Sensor):
         return jnp.squeeze(measured, axis=-1)
 
     def sample(self, field: Field, *, key: jax.Array) -> jnp.ndarray:
+        """Sample the detector output with the configured stochastic noise model."""
         return _apply_optional_noise(
             self.expected(field),
             noise_model=self.noise_model,
@@ -70,7 +100,28 @@ class Detector(Sensor):
 
 @dataclass(frozen=True)
 class DetectorArray(Sensor):
-    """Grid-based detector array with optional QE weighting, filters, and noise."""
+    """Grid-based detector array with optional QE weighting and noise.
+
+    Integrates field intensity onto a coarser ``detector_grid`` by
+    binning field pixels into detector super-pixels.  Supports per-
+    wavelength quantum-efficiency curves, an optional pre-detection
+    amplitude filter, and stochastic noise models.
+
+    Output shape is ``(*batch, [num_wavelengths,] [2,] det_ny, det_nx)``
+    depending on ``sum_wavelengths`` and ``channel_resolved``.
+
+    Args:
+        detector_grid: Detector pixel grid (typically coarser than the
+            field grid).
+        qe_curve: Quantum efficiency — scalar, 1-D array of shape
+            ``(num_wavelengths,)``, or ``None``.
+        filter_mask: Optional ``AmplitudeMask`` applied to the intensity
+            before integration.
+        sum_wavelengths: Sum over the wavelength axis.
+        channel_resolved: Preserve per-polarisation channel intensities.
+        resample_method: Interpolation method for detector binning.
+        noise_model: Optional stochastic noise model.
+    """
 
     detector_grid: Grid
     qe_curve: jnp.ndarray | float | None = 1.0
@@ -81,10 +132,23 @@ class DetectorArray(Sensor):
     noise_model: SensorNoiseModel | None = None
 
     def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
+        """Return the detector-array readout, optionally with sampled noise."""
         measured = self.expected(field)
         return _apply_optional_noise(measured, noise_model=self.noise_model, key=key)
 
     def expected(self, field: Field) -> jnp.ndarray:
+        """Return the deterministic detector-array signal before noise.
+
+        Args:
+            field: Input field. K-space input is converted to spatial domain.
+
+        Returns:
+            Array with shape ``(*batch, det_ny, det_nx)``,
+            ``(*batch, num_wavelengths, det_ny, det_nx)``,
+            ``(*batch, 2, det_ny, det_nx)``, or
+            ``(*batch, num_wavelengths, 2, det_ny, det_nx)`` depending on
+            ``sum_wavelengths`` and ``channel_resolved``.
+        """
         field_spatial = field.to_spatial()
         channel_resolved = self.channel_resolved and field_spatial.is_jones
         if channel_resolved:
@@ -106,6 +170,7 @@ class DetectorArray(Sensor):
         )
 
     def sample(self, field: Field, *, key: jax.Array) -> jnp.ndarray:
+        """Sample the detector-array output with the configured noise model."""
         return _apply_optional_noise(
             self.expected(field),
             noise_model=self.noise_model,

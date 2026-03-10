@@ -199,12 +199,32 @@ def _centered_delta_field(field: Field) -> Field:
 
 @dataclass(frozen=True)
 class OpticalModule(OpticalLayer):
-    """Thin sequential container for optical layers and monitor checkpoints."""
+    """Sequential container for optical layers and monitor checkpoints.
+
+    Layers are executed in order via :meth:`forward`.  ``Monitor``
+    instances in the layer tuple are skipped during forward propagation
+    but can be read via :meth:`observe`.  An optional ``Sensor`` can be
+    attached for end-to-end measurement via :meth:`measure`.
+
+    Args:
+        layers: Ordered sequence of ``OpticalLayer`` and ``Monitor``
+            stages.
+        sensor: Optional detector applied after the last layer.
+    """
 
     layers: tuple[OpticalLayer | Monitor, ...]
     sensor: Sensor | None = None
 
     def forward(self, field: Field) -> Field:
+        """Run the non-monitor stages in sequence.
+
+        Args:
+            field: Input field for the module.
+
+        Returns:
+            Output of the last non-monitor layer. Inline monitors are skipped
+            and do not modify the field.
+        """
         output = field
         for stage in self.layers:
             if isinstance(stage, Monitor):
@@ -213,14 +233,28 @@ class OpticalModule(OpticalLayer):
         return output
 
     def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
-        """Forward through layers and apply the configured sensor."""
+        """Forward through all layers and apply the configured sensor.
+
+        Args:
+            field: Input optical field.
+            key: Optional PRNG key forwarded to the sensor for noise.
+
+        Raises:
+            ValueError: If no sensor is configured.
+        """
         if self.sensor is None:
             raise ValueError("OpticalModule has no sensor configured")
         output = self.forward(field)
         return self.sensor.measure(output, key=key)
 
     def observe(self, field: Field) -> tuple[Field, tuple[jnp.ndarray, ...]]:
-        """Run one forward pass and collect outputs from inline monitor checkpoints."""
+        """Forward through all layers and collect monitor readouts.
+
+        Returns:
+            A tuple ``(output_field, monitor_readings)`` where
+            *monitor_readings* contains one entry per ``Monitor``
+            in the layer stack, in encounter order.
+        """
         output = field
         observed: list[jnp.ndarray] = []
         for stage in self.layers:
@@ -232,7 +266,17 @@ class OpticalModule(OpticalLayer):
         return output, tuple(observed)
 
     def trace(self, field: Field, include_input: bool = True) -> list[Field]:
-        """Return intermediate fields through the module."""
+        """Return the intermediate field after each layer.
+
+        Args:
+            field: Input optical field.
+            include_input: If ``True`` (default) the input field is
+                included as the first element.
+
+        Returns:
+            List of ``Field`` objects, one per layer (plus input if
+            requested).
+        """
         output = field
         states: list[Field] = [output] if include_input else []
         for stage in self.layers:
@@ -243,6 +287,11 @@ class OpticalModule(OpticalLayer):
         return states
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Collect parameter dictionaries from non-monitor layers.
+
+        Returns:
+            Flat dictionary keyed as ``layer_<index>.<parameter_name>``.
+        """
         params: dict[str, jnp.ndarray] = {}
         for i, stage in enumerate(self.layers):
             if isinstance(stage, Monitor):
@@ -254,11 +303,20 @@ class OpticalModule(OpticalLayer):
 
 @dataclass(frozen=True)
 class PhaseMask(OpticalLayer):
-    """Generic phase-only modulation layer."""
+    """Spatial-domain phase-only modulation layer.
+
+    Multiplies the field by ``exp(j * phase_map_rad)``.  Requires
+    spatial-domain input.
+
+    Args:
+        phase_map_rad: Phase in radians.  Accepted shapes: scalar,
+            ``(ny, nx)``, or ``(num_wavelengths, ny, nx)``.
+    """
 
     phase_map_rad: jnp.ndarray | float
 
     def forward(self, field: Field) -> Field:
+        """Apply the phase mask to a spatial-domain field."""
         _require_domain(field, expected="spatial", layer_name="PhaseMask")
         self.validate_for(field)
         phase = _expand_map(
@@ -270,16 +328,26 @@ class PhaseMask(OpticalLayer):
         return field.apply_phase(phase)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return the phase map as the exposed layer parameter."""
         return {"phase_map_rad": jnp.asarray(self.phase_map_rad, dtype=jnp.float32)}
 
 
 @dataclass(frozen=True)
 class AmplitudeMask(OpticalLayer):
-    """Generic amplitude modulation layer."""
+    """Spatial-domain amplitude modulation layer.
+
+    Multiplies the field amplitude by a real-valued mask.  Requires
+    spatial-domain input.
+
+    Args:
+        amplitude_map: Amplitude transmission.  Accepted shapes: scalar,
+            ``(ny, nx)``, or ``(num_wavelengths, ny, nx)``.
+    """
 
     amplitude_map: jnp.ndarray | float
 
     def forward(self, field: Field) -> Field:
+        """Apply the amplitude mask to a spatial-domain field."""
         _require_domain(field, expected="spatial", layer_name="AmplitudeMask")
         self.validate_for(field)
         amplitude = _expand_map(
@@ -291,17 +359,27 @@ class AmplitudeMask(OpticalLayer):
         return field.apply_amplitude(amplitude)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return the amplitude map as the exposed layer parameter."""
         return {"amplitude_map": jnp.asarray(self.amplitude_map, dtype=jnp.float32)}
 
 
 @dataclass(frozen=True)
 class ComplexMask(OpticalLayer):
-    """Generic complex-valued modulation layer (amplitude and phase)."""
+    """Spatial-domain complex-valued modulation layer.
+
+    Applies both amplitude and phase modulation in a single step.
+    Requires spatial-domain input.
+
+    Args:
+        amplitude_map: Real amplitude transmission (default 1.0).
+        phase_map_rad: Phase in radians (default 0.0).
+    """
 
     amplitude_map: jnp.ndarray | float = 1.0
     phase_map_rad: jnp.ndarray | float = 0.0
 
     def forward(self, field: Field) -> Field:
+        """Apply amplitude and phase modulation in one spatial-domain step."""
         _require_domain(field, expected="spatial", layer_name="ComplexMask")
         self.validate_for(field)
         amplitude = _expand_map(
@@ -319,6 +397,7 @@ class ComplexMask(OpticalLayer):
         return field.apply_amplitude(amplitude).apply_phase(phase)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return both amplitude and phase maps for optimisation."""
         return {
             "amplitude_map": jnp.asarray(self.amplitude_map, dtype=jnp.float32),
             "phase_map_rad": jnp.asarray(self.phase_map_rad, dtype=jnp.float32),
@@ -327,11 +406,20 @@ class ComplexMask(OpticalLayer):
 
 @dataclass(frozen=True)
 class JonesMatrixLayer(OpticalLayer):
-    """Spatial-domain Jones matrix modulation layer."""
+    """Spatial-domain Jones matrix modulation layer.
+
+    Applies a 2×2 Jones matrix to each spatial point of a Jones-polarised
+    field. Requires spatial-domain input with ``polarization_mode='jones'``.
+
+    Args:
+        jones_matrix: Jones matrix with shape ``(2, 2)``,
+            ``(2, 2, ny, nx)``, or ``(num_wavelengths, 2, 2, ny, nx)``.
+    """
 
     jones_matrix: jnp.ndarray
 
     def forward(self, field: Field) -> Field:
+        """Mix Jones polarization channels at each spatial sample."""
         _require_domain(field, expected="spatial", layer_name="JonesMatrixLayer")
         self.validate_for(field)
         matrix = _expand_jones_matrix_map(self.jones_matrix, field, name="jones_matrix")
@@ -347,22 +435,35 @@ class JonesMatrixLayer(OpticalLayer):
         return _with_field_metadata(out, field)
 
     def validate_for(self, field: Field) -> None:
+        """Require a valid Jones-polarized input field."""
         super().validate_for(field)
         if not field.is_jones:
             raise ValueError("JonesMatrixLayer requires polarization_mode='jones'")
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return the Jones matrix as the exposed layer parameter."""
         return {"jones_matrix": jnp.asarray(self.jones_matrix, dtype=jnp.complex64)}
 
 
 @dataclass(frozen=True)
 class KSpacePhaseMask(OpticalLayer):
-    """k-domain phase-only modulation layer."""
+    """k-space phase-only modulation layer.
+
+    Multiplies the k-space field by ``exp(j * phase_map_rad)``.
+    Requires k-space-domain input.
+
+    Args:
+        phase_map_rad: Phase in radians.  Accepted shapes: scalar,
+            ``(ny, nx)``, or ``(num_wavelengths, ny, nx)``.
+        aperture_diameter_um: Optional circular aperture diameter in
+            micrometers, reported via :meth:`parameters`.
+    """
 
     phase_map_rad: jnp.ndarray | float
     aperture_diameter_um: float | None = None
 
     def forward(self, field: Field) -> Field:
+        """Apply a phase-only modulation to a k-space field."""
         _require_domain(field, expected="kspace", layer_name="KSpacePhaseMask")
         self.validate_for(field)
         phase = _expand_map(
@@ -375,6 +476,7 @@ class KSpacePhaseMask(OpticalLayer):
         return _with_field_metadata(data, field)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return the phase map and optional reported aperture diameter."""
         params = {"phase_map_rad": jnp.asarray(self.phase_map_rad, dtype=jnp.float32)}
         if self.aperture_diameter_um is not None:
             params["aperture_diameter_um"] = jnp.asarray(
@@ -385,12 +487,23 @@ class KSpacePhaseMask(OpticalLayer):
 
 @dataclass(frozen=True)
 class KSpaceAmplitudeMask(OpticalLayer):
-    """k-domain amplitude modulation layer."""
+    """k-space amplitude modulation layer.
+
+    Multiplies the k-space field amplitude by a real-valued mask.
+    Requires k-space-domain input.
+
+    Args:
+        amplitude_map: Amplitude transmission.  Accepted shapes: scalar,
+            ``(ny, nx)``, or ``(num_wavelengths, ny, nx)``.
+        aperture_diameter_um: Optional circular aperture diameter in
+            micrometers.
+    """
 
     amplitude_map: jnp.ndarray | float
     aperture_diameter_um: float | None = None
 
     def forward(self, field: Field) -> Field:
+        """Apply an amplitude-only modulation to a k-space field."""
         _require_domain(field, expected="kspace", layer_name="KSpaceAmplitudeMask")
         self.validate_for(field)
         amplitude = _expand_map(
@@ -403,6 +516,7 @@ class KSpaceAmplitudeMask(OpticalLayer):
         return _with_field_metadata(data, field)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return the amplitude map and optional reported aperture diameter."""
         params = {"amplitude_map": jnp.asarray(self.amplitude_map, dtype=jnp.float32)}
         if self.aperture_diameter_um is not None:
             params["aperture_diameter_um"] = jnp.asarray(
@@ -413,13 +527,24 @@ class KSpaceAmplitudeMask(OpticalLayer):
 
 @dataclass(frozen=True)
 class KSpaceComplexMask(OpticalLayer):
-    """k-domain complex-valued modulation layer (amplitude and phase)."""
+    """k-space complex-valued modulation layer.
+
+    Applies both amplitude and phase modulation in k-space.  Requires
+    k-space-domain input.
+
+    Args:
+        amplitude_map: Real amplitude transmission (default 1.0).
+        phase_map_rad: Phase in radians (default 0.0).
+        aperture_diameter_um: Optional circular aperture diameter in
+            micrometers.
+    """
 
     amplitude_map: jnp.ndarray | float = 1.0
     phase_map_rad: jnp.ndarray | float = 0.0
     aperture_diameter_um: float | None = None
 
     def forward(self, field: Field) -> Field:
+        """Apply amplitude and phase modulation in k-space."""
         _require_domain(field, expected="kspace", layer_name="KSpaceComplexMask")
         self.validate_for(field)
         amplitude = _expand_map(
@@ -438,6 +563,7 @@ class KSpaceComplexMask(OpticalLayer):
         return _with_field_metadata(data, field)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return both modulation maps and any reported aperture diameter."""
         params = {
             "amplitude_map": jnp.asarray(self.amplitude_map, dtype=jnp.float32),
             "phase_map_rad": jnp.asarray(self.phase_map_rad, dtype=jnp.float32),
@@ -451,12 +577,24 @@ class KSpaceComplexMask(OpticalLayer):
 
 @dataclass(frozen=True)
 class KJonesMatrixLayer(OpticalLayer):
-    """k-domain Jones matrix modulation layer."""
+    """k-space Jones matrix modulation layer.
+
+    Applies a 2×2 Jones matrix to each frequency component of a
+    Jones-polarised field.  Requires k-space-domain input with
+    ``polarization_mode='jones'``.
+
+    Args:
+        jones_matrix: Jones matrix array (see ``JonesMatrixLayer`` for
+            accepted shapes).
+        aperture_diameter_um: Optional circular aperture diameter in
+            micrometers.
+    """
 
     jones_matrix: jnp.ndarray
     aperture_diameter_um: float | None = None
 
     def forward(self, field: Field) -> Field:
+        """Mix Jones polarization channels at each sampled k-space point."""
         _require_domain(field, expected="kspace", layer_name="KJonesMatrixLayer")
         self.validate_for(field)
         matrix = _expand_jones_matrix_map(self.jones_matrix, field, name="jones_matrix")
@@ -472,11 +610,13 @@ class KJonesMatrixLayer(OpticalLayer):
         return _with_field_metadata(out, field)
 
     def validate_for(self, field: Field) -> None:
+        """Require a valid Jones-polarized k-space input field."""
         super().validate_for(field)
         if not field.is_jones:
             raise ValueError("KJonesMatrixLayer requires polarization_mode='jones'")
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return the Jones matrix and optional reported aperture diameter."""
         params: dict[str, jnp.ndarray] = {
             "jones_matrix": jnp.asarray(self.jones_matrix, dtype=jnp.complex64)
         }
@@ -489,21 +629,29 @@ class KJonesMatrixLayer(OpticalLayer):
 
 @dataclass(frozen=True)
 class ThinLens(OpticalLayer):
-    """
-    Ideal thin lens phase transform using a hyperbolic optical path phase.
+    """Ideal thin lens applying a hyperbolic optical-path phase delay.
 
-    The applied phase is
-        phi(x, y) = -k * (sqrt(x^2 + y^2 + f^2) - f)
-    which preserves the on-axis phase reference and is valid over a larger
-    domain than the paraxial quadratic approximation.
+    The applied phase is::
 
-    All length quantities use micrometers (um).
+        phi(x, y) = -k * (sqrt(x**2 + y**2 + f**2) - f)
+
+    which preserves the on-axis phase reference and is valid over a
+    larger domain than the paraxial quadratic approximation.  Requires
+    spatial-domain input.
+
+    All length quantities are in micrometers.
+
+    Args:
+        focal_length_um: Focal length in micrometers (must be positive).
+        aperture_diameter_um: Optional circular aperture diameter in
+            micrometers applied after the phase delay.
     """
 
     focal_length_um: float
     aperture_diameter_um: float | None = None
 
     def forward(self, field: Field) -> Field:
+        """Apply thin-lens phase delay and an optional circular aperture."""
         _require_domain(field, expected="spatial", layer_name="ThinLens")
         self.validate_for(field)
         if self.focal_length_um <= 0:
@@ -533,6 +681,7 @@ class ThinLens(OpticalLayer):
         return transformed
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return the focal length and optional aperture diameter."""
         params: dict[str, jnp.ndarray] = {
             "focal_length_um": jnp.asarray(self.focal_length_um, dtype=jnp.float32)
         }
@@ -545,11 +694,29 @@ class ThinLens(OpticalLayer):
 
 @dataclass(frozen=True)
 class IncoherentImager(OpticalLayer):
-    """
-    Incoherent shift-invariant imager built from coherent optics + propagation.
+    """Incoherent shift-invariant imager built from coherent optics.
 
-    The PSF is constructed internally by propagating a calibration source through:
-    `optical_layer -> propagator(distance_um)` and taking output intensity.
+    The PSF is constructed by propagating a calibration source (impulse
+    or plane wave) through ``optical_layer`` followed by a propagator at
+    ``distance_um`` and taking the output intensity.  The input field's
+    intensity is then convolved with this PSF.
+
+    Requires spatial-domain, scalar input.
+
+    Args:
+        optical_layer: Coherent optical layer defining the imaging optics.
+        propagator: Propagation layer (e.g. ``ASMPropagator``) whose
+            ``distance_um`` will be overridden.
+        distance_um: Imaging distance in micrometers.
+        psf_source: Calibration source type (``"impulse"`` or
+            ``"plane_wave_focus"``).
+        normalize_psf: Normalise the PSF so it sums to unity.
+        enforce_nonnegative_psf: Clamp negative PSF values to zero.
+        mode: Convolution backend — ``"psf"``, ``"otf"``, or ``"auto"``.
+        normalization_reference: Reference distance strategy for PSF
+            normalisation.
+        normalization_reference_distance_um: Explicit reference distance
+            override in micrometers.
     """
 
     optical_layer: OpticalLayer
@@ -565,12 +732,14 @@ class IncoherentImager(OpticalLayer):
     normalization_reference_distance_um: float | None = None
 
     def normalization_distance_um(self, field: Field) -> float:
-        """
-        Return the propagation distance used to compute PSF normalization sums.
+        """Choose the reference distance used to normalize the PSF.
 
-        This can be kept near-field (e.g. 1 um or wavelength-scale) so most power
-        remains inside the simulated grid, reducing normalization bias from far-field
-        truncation.
+        Args:
+            field: Input scalar field whose wavelength range may be used when
+                ``normalization_reference="near_wavelength"``.
+
+        Returns:
+            Reference distance in micrometers used to compute PSF energy sums.
         """
         if self.normalization_reference_distance_um is not None:
             if self.normalization_reference_distance_um <= 0:
@@ -588,6 +757,14 @@ class IncoherentImager(OpticalLayer):
         )
 
     def build_psf(self, field: Field) -> jnp.ndarray:
+        """Construct the imaging PSF on the input field grid.
+
+        Args:
+            field: Spatial-domain scalar field defining the grid and spectrum.
+
+        Returns:
+            Real PSF array with shape ``(num_wavelengths, ny, nx)``.
+        """
         _require_domain(field, expected="spatial", layer_name="IncoherentImager")
         if field.is_jones:
             raise ValueError("IncoherentImager currently supports scalar fields only")
@@ -636,6 +813,15 @@ class IncoherentImager(OpticalLayer):
         return psf
 
     def forward(self, field: Field) -> Field:
+        """Apply shift-invariant incoherent imaging to a scalar field.
+
+        Args:
+            field: Spatial-domain scalar field.
+
+        Returns:
+            Spatial-domain scalar field whose amplitude is the square root of
+            the imaged intensity.
+        """
         _require_domain(field, expected="spatial", layer_name="IncoherentImager")
         spatial_field = field
         self.validate_for(spatial_field)
@@ -708,6 +894,7 @@ class IncoherentImager(OpticalLayer):
         )
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return imager parameters together with nested optical-layer parameters."""
         params: dict[str, jnp.ndarray] = {
             "distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32),
         }
@@ -718,9 +905,14 @@ class IncoherentImager(OpticalLayer):
 
 @dataclass(frozen=True)
 class FourierTransform(OpticalLayer):
-    """Explicit spatial -> k-space transform layer."""
+    """Explicit spatial → k-space domain transform layer.
+
+    Requires spatial-domain input.  Equivalent to :meth:`Field.to_kspace`
+    wrapped as an ``OpticalLayer`` for use inside an ``OpticalModule``.
+    """
 
     def forward(self, field: Field) -> Field:
+        """Convert a spatial-domain field to k-space."""
         _require_domain(field, expected="spatial", layer_name="FourierTransform")
         self.validate_for(field)
         return field.to_kspace()
@@ -728,9 +920,14 @@ class FourierTransform(OpticalLayer):
 
 @dataclass(frozen=True)
 class InverseFourierTransform(OpticalLayer):
-    """Explicit k-space -> spatial transform layer."""
+    """Explicit k-space → spatial domain transform layer.
+
+    Requires k-space-domain input.  Equivalent to
+    :meth:`Field.to_spatial` wrapped as an ``OpticalLayer``.
+    """
 
     def forward(self, field: Field) -> Field:
+        """Convert a k-space field back to spatial domain."""
         _require_domain(field, expected="kspace", layer_name="InverseFourierTransform")
         self.validate_for(field)
         return field.to_spatial()

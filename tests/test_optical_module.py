@@ -107,7 +107,7 @@ def test_propagation_layer_matches_direct_propagator():
     )
 
 
-def test_batched_asm_matches_vmap_single_sample():
+def test_batched_asm_matches_single_sample_loop():
     grid = Grid.from_extent(nx=8, ny=8, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
     phase = jnp.asarray([0.0, 0.2, -0.4], dtype=jnp.float32)
@@ -124,8 +124,9 @@ def test_batched_asm_matches_vmap_single_sample():
         sample_field = Field(data=sample_data, grid=grid, spectrum=spectrum)
         return layer.forward(sample_field).data
 
-    out_vmap = jax.vmap(forward_single)(data)
-    np.testing.assert_allclose(np.asarray(out_batch.data), np.asarray(out_vmap), atol=1e-6)
+    # Use a Python loop rather than jax.vmap here to keep CI memory usage low.
+    out_single = jnp.stack([forward_single(sample) for sample in data], axis=0)
+    np.testing.assert_allclose(np.asarray(out_batch.data), np.asarray(out_single), atol=1e-6)
 
 
 def test_detector_array_and_field_monitor_representations():

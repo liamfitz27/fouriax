@@ -1,8 +1,10 @@
 """Optimize shared square-pillar geometry in a propagated optical stack."""
 
-#%% Imports
+# %% Imports
 from __future__ import annotations
 
+# %% Paths and Parameters
+import argparse
 from pathlib import Path
 
 import jax
@@ -23,23 +25,46 @@ from fouriax.optics import (
 )
 from fouriax.optim import optimize_optical_module
 
-#%% Paths and Parameters
-NPZ_PATH = Path("../../data/meta_atoms/square_pillar_0p7um_cell_sweep_results.npz")
-ARTIFACTS_DIR = Path("artifacts")
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Meta-Atom Optimization Example")
+    parser.add_argument(
+        "--npz-path",
+        type=str,
+        default="data/meta_atoms/square_pillar_0p7um_cell_sweep_results.npz",
+    )
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--speed-of-light", type=float, default=299_792_458.0)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--grid-n", type=int, default=64)
+    parser.add_argument("--grid-dx-um", type=float, default=0.7)
+    parser.add_argument("--selected-wavelength-um", type=float, default=1.30)
+    parser.add_argument("--distance-um", type=float, default=100.0)
+    parser.add_argument("--lr", type=float, default=0.1)
+    parser.add_argument("--steps", type=int, default=180)
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+NPZ_PATH = Path(ARGS.npz_path)
+ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 PLOT_PATH = ARTIFACTS_DIR / "metaatom_opt_overview.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "metaatom_opt_summary.json"
 
-SPEED_OF_LIGHT_M_PER_S = 299_792_458.0
-SEED = 0
-GRID_N = 64
-GRID_DX_UM = 0.7
-SELECTED_WAVELENGTH_UM = 1.30
-DISTANCE_UM = 100.0
-LR = 0.1
-STEPS = 180
+SPEED_OF_LIGHT_M_PER_S = ARGS.speed_of_light
+SEED = ARGS.seed
+GRID_N = ARGS.grid_n
+GRID_DX_UM = ARGS.grid_dx_um
+SELECTED_WAVELENGTH_UM = ARGS.selected_wavelength_um
+DISTANCE_UM = ARGS.distance_um
+LR = ARGS.lr
+STEPS = ARGS.steps
+PLOT = not ARGS.no_plot
 
 
-#%% Helper Functions
+# %% Helper Functions
 def load_square_pillar_library(npz_path: Path) -> MetaAtomLibrary:
     """Load LUT from NPZ keys: freqs [Hz], side_lengths [m], trans, phase."""
     with np.load(npz_path) as data:
@@ -70,7 +95,7 @@ def load_square_pillar_library(npz_path: Path) -> MetaAtomLibrary:
 
 
 def main() -> None:
-    #%% Setup
+    # %% Setup
     library = load_square_pillar_library(NPZ_PATH)
 
     nearest_idx = int(jnp.argmin(jnp.abs(library.wavelengths_um - SELECTED_WAVELENGTH_UM)))
@@ -104,7 +129,7 @@ def main() -> None:
             )
         )
 
-    #%% Loss Function and Optimization
+    # %% Loss Function and Optimization
     def loss_fn(raw_params: jnp.ndarray) -> jnp.ndarray:
         module = build_module(raw_params)
         intensity = module.forward(field_in).intensity()
@@ -124,16 +149,14 @@ def main() -> None:
         log_every=30,
     )
 
-    #%% Evaluation
+    # %% Evaluation
     final_intensity = np.asarray(result.best_module.forward(field_in).intensity())
     optimized_profile = final_intensity[0, target_xy[1], :]
 
     # Reference: phase profile for ideal spherical wavefront convergence at distance_um.
     x_um, y_um = grid.spatial_grid()
     k = 2.0 * jnp.pi / wavelength_um
-    hyperbolic_phase = -k * (
-        jnp.sqrt(x_um * x_um + y_um * y_um + DISTANCE_UM**2) - DISTANCE_UM
-    )
+    hyperbolic_phase = -k * (jnp.sqrt(x_um * x_um + y_um * y_um + DISTANCE_UM**2) - DISTANCE_UM)
     reference_module = OpticalModule(
         layers=(
             PhaseMask(phase_map_rad=hyperbolic_phase[None, :, :]),
@@ -151,38 +174,39 @@ def main() -> None:
         max_geometry_params=max_bounds,
     )
     optimized_side_map = np.asarray(final_layer.bounded_geometry_params()[0])
-    #%% Plot Results
-    fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.0))
+    # %% Plot Results
+    if PLOT:
+        fig, axes = plt.subplots(2, 2, figsize=(11.5, 8.0))
 
-    axes[0, 0].plot(result.history)
-    axes[0, 0].set_title("Loss History")
-    axes[0, 0].set_xlabel("Step")
-    axes[0, 0].set_ylabel("Loss")
-    axes[0, 0].grid(alpha=0.3)
+        axes[0, 0].plot(result.history)
+        axes[0, 0].set_title("Loss History")
+        axes[0, 0].set_xlabel("Step")
+        axes[0, 0].set_ylabel("Loss")
+        axes[0, 0].grid(alpha=0.3)
 
-    side_im = axes[0, 1].imshow(optimized_side_map, cmap="viridis")
-    axes[0, 1].set_title("Optimized Meta-Atom Side-Lengths")
-    axes[0, 1].set_xticks([])
-    axes[0, 1].set_yticks([])
-    plt.colorbar(side_im, ax=axes[0, 1], fraction=0.046, pad=0.04)
+        side_im = axes[0, 1].imshow(optimized_side_map, cmap="viridis")
+        axes[0, 1].set_title("Optimized Meta-Atom Side-Lengths")
+        axes[0, 1].set_xticks([])
+        axes[0, 1].set_yticks([])
+        plt.colorbar(side_im, ax=axes[0, 1], fraction=0.046, pad=0.04)
 
-    focus_im = axes[1, 0].imshow(final_intensity[0], cmap="inferno")
-    axes[1, 0].set_title("Optimized 2D Focal Spot")
-    axes[1, 0].set_xticks([])
-    axes[1, 0].set_yticks([])
-    plt.colorbar(focus_im, ax=axes[1, 0], fraction=0.046, pad=0.04)
+        focus_im = axes[1, 0].imshow(final_intensity[0], cmap="inferno")
+        axes[1, 0].set_title("Optimized 2D Focal Spot")
+        axes[1, 0].set_xticks([])
+        axes[1, 0].set_yticks([])
+        plt.colorbar(focus_im, ax=axes[1, 0], fraction=0.046, pad=0.04)
 
-    axes[1, 1].plot(optimized_profile, label="Optimized")
-    axes[1, 1].plot(reference_profile, label="Hyperbolic-phase reference", linestyle="--")
-    axes[1, 1].set_title("Center Row Profile")
-    axes[1, 1].set_xlabel("x pixel")
-    axes[1, 1].grid(alpha=0.3)
-    axes[1, 1].legend()
+        axes[1, 1].plot(optimized_profile, label="Optimized")
+        axes[1, 1].plot(reference_profile, label="Hyperbolic-phase reference", linestyle="--")
+        axes[1, 1].set_title("Center Row Profile")
+        axes[1, 1].set_xlabel("x pixel")
+        axes[1, 1].grid(alpha=0.3)
+        axes[1, 1].legend()
 
-    fig.tight_layout()
-    fig.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig)
-    print(f"saved: {PLOT_PATH}")
+        fig.tight_layout()
+        fig.savefig(PLOT_PATH, dpi=150)
+        plt.close(fig)
+        print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

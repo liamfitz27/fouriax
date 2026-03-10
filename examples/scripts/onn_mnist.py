@@ -1,8 +1,10 @@
 """Train a small optical neural network (ONN) on MNIST with OpticalModule."""
 
-#%% Imports
+# %% Imports
 from __future__ import annotations
 
+# %% Paths and Parameters
+import argparse
 import urllib.request
 from pathlib import Path
 
@@ -26,27 +28,50 @@ from fouriax.optics import (
 )
 from fouriax.optim import optimize_dataset_optical_module
 
-#%% Paths and Parameters
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="ONN MNIST Example")
+    parser.add_argument("--data-path", type=str, default="data/mnist.npz")
+    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--learning-rate", type=float, default=0.05)
+    parser.add_argument("--num-phase-layers", type=int, default=4)
+    parser.add_argument("--phase-mask-downsample", type=int, default=4)
+    parser.add_argument("--nyquist-factor", type=float, default=1.0)
+    parser.add_argument("--distance-um", type=float, default=50.0)
+    parser.add_argument("--train-samples", type=int, default=1000)
+    parser.add_argument("--test-samples", type=int, default=100)
+    parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
 MNIST_URL = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"
-ARTIFACTS_DIR = Path("artifacts")
+ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 DATA_DIR = ARTIFACTS_DIR / "data"
 MNIST_CACHE_PATH = DATA_DIR / "mnist.npz"
 PLOT_PATH = ARTIFACTS_DIR / "onn_mnist_field_evolution.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "onn_mnist_summary.json"
 
-DEVICE = "cpu"
-SEED = 0
-EPOCHS = 10
-BATCH_SIZE = 64
-LEARNING_RATE = 0.05
-NUM_PHASE_LAYERS = 4
-PHASE_MASK_DOWNSAMPLE = 4
-NYQUIST_FACTOR = 1.0
-DISTANCE_UM = 50.0
-TRAIN_SAMPLES = 1000
-TEST_SAMPLES = 100
+DEVICE = ARGS.device
+SEED = ARGS.seed
+EPOCHS = ARGS.epochs
+BATCH_SIZE = ARGS.batch_size
+LEARNING_RATE = ARGS.learning_rate
+NUM_PHASE_LAYERS = ARGS.num_phase_layers
+PHASE_MASK_DOWNSAMPLE = ARGS.phase_mask_downsample
+NYQUIST_FACTOR = ARGS.nyquist_factor
+DISTANCE_UM = ARGS.distance_um
+TRAIN_SAMPLES = ARGS.train_samples
+TEST_SAMPLES = ARGS.test_samples
+PLOT = not ARGS.no_plot
 
-#%% Helper Functions
+
+# %% Helper Functions
 def load_mnist(cache_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     if not cache_path.exists():
@@ -72,7 +97,7 @@ def resize_images_to_grid(images: np.ndarray, grid: Grid) -> np.ndarray:
 
 
 def main() -> None:
-    #%% Setup
+    # %% Setup
     jax.config.update("jax_platform_name", DEVICE)
     selected_device = jax.devices()[0]
     jax.config.update("jax_default_device", selected_device)
@@ -139,7 +164,7 @@ def main() -> None:
         dtype=jnp.float32,
     )
 
-    #%% Loss Function and Optimization
+    # %% Loss Function and Optimization
     def logits_batch(raw_params: jnp.ndarray, images_3d: jnp.ndarray) -> jnp.ndarray:
         module = build_module(raw_params)
         field = Field(
@@ -181,7 +206,7 @@ def main() -> None:
         seed=SEED + 1,
     )
 
-    #%% Evaluation
+    # %% Evaluation
     train_acc = batch_accuracy(result.params_result.best_params, x_train, y_train)
     test_acc = batch_accuracy(result.params_result.best_params, x_test, y_test)
     final_val_loss = (
@@ -203,78 +228,77 @@ def main() -> None:
         spectrum=spectrum,
     )
 
-    #%% Plot Results
-    _, intensity_steps = module.observe(sample_field)
-    phase_masks = [
-        np.asarray(stage.phase_map_rad)
-        for stage in module.layers
-        if isinstance(stage, PhaseMask)
-    ]
-    titles = ["Input"] + [
-        f"After Propagation {i + 1}" for i in range(len(intensity_steps) - 1)
-    ]
-    n_cols = max(len(intensity_steps), len(phase_masks))
-    fig_field, axes = plt.subplots(
-        2,
-        n_cols,
-        figsize=(max(6.0, 2.8 * n_cols), 6.8),
-        squeeze=False,
-    )
-    for col, ax in enumerate(axes[0]):
-        if col >= len(intensity_steps):
-            ax.axis("off")
-            continue
-        title = titles[col]
-        image = intensity_steps[col]
-        im = ax.imshow(np.asarray(image), cmap="inferno")
-        ax.set_title(title, fontsize=9)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        fig_field.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
-        if col == len(intensity_steps) - 1:
-            cell_w = work_grid.nx / detector_grid.nx
-            cell_h = work_grid.ny / detector_grid.ny
-            digit = 0
-            for row in range(detector_grid.ny):
-                for det_col in range(detector_grid.nx):
-                    ax.add_patch(
-                        Rectangle(
-                            (det_col * cell_w - 0.5, row * cell_h - 0.5),
-                            cell_w,
-                            cell_h,
-                            fill=False,
-                            edgecolor="red",
-                            linewidth=1.2,
+    # %% Plot Results
+    if PLOT:
+        _, intensity_steps = module.observe(sample_field)
+        phase_masks = [
+            np.asarray(stage.phase_map_rad)
+            for stage in module.layers
+            if isinstance(stage, PhaseMask)
+        ]
+        titles = ["Input"] + [f"After Propagation {i + 1}" for i in range(len(intensity_steps) - 1)]
+        n_cols = max(len(intensity_steps), len(phase_masks))
+        fig_field, axes = plt.subplots(
+            2,
+            n_cols,
+            figsize=(max(6.0, 2.8 * n_cols), 6.8),
+            squeeze=False,
+        )
+        for col, ax in enumerate(axes[0]):
+            if col >= len(intensity_steps):
+                ax.axis("off")
+                continue
+            title = titles[col]
+            image = intensity_steps[col]
+            im = ax.imshow(np.asarray(image), cmap="inferno")
+            ax.set_title(title, fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            fig_field.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+            if col == len(intensity_steps) - 1:
+                cell_w = work_grid.nx / detector_grid.nx
+                cell_h = work_grid.ny / detector_grid.ny
+                digit = 0
+                for row in range(detector_grid.ny):
+                    for det_col in range(detector_grid.nx):
+                        ax.add_patch(
+                            Rectangle(
+                                (det_col * cell_w - 0.5, row * cell_h - 0.5),
+                                cell_w,
+                                cell_h,
+                                fill=False,
+                                edgecolor="red",
+                                linewidth=1.2,
+                            )
                         )
-                    )
-                    ax.text(
-                        det_col * cell_w + 0.5 * cell_w - 0.5,
-                        row * cell_h + 0.5 * cell_h - 0.5,
-                        str(digit),
-                        color="red",
-                        fontsize=10,
-                        fontweight="bold",
-                        ha="center",
-                        va="center",
-                    )
-                    digit += 1
+                        ax.text(
+                            det_col * cell_w + 0.5 * cell_w - 0.5,
+                            row * cell_h + 0.5 * cell_h - 0.5,
+                            str(digit),
+                            color="red",
+                            fontsize=10,
+                            fontweight="bold",
+                            ha="center",
+                            va="center",
+                        )
+                        digit += 1
 
-    for col, ax in enumerate(axes[1]):
-        if col >= len(phase_masks):
-            ax.axis("off")
-            continue
-        phase = phase_masks[col]
-        im = ax.imshow(phase, cmap="twilight", vmin=0.0, vmax=2.0 * np.pi)
-        ax.set_title(f"Phase Mask {col + 1}", fontsize=9)
-        ax.set_xticks([])
-        ax.set_yticks([])
-        fig_field.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+        for col, ax in enumerate(axes[1]):
+            if col >= len(phase_masks):
+                ax.axis("off")
+                continue
+            phase = phase_masks[col]
+            im = ax.imshow(phase, cmap="twilight", vmin=0.0, vmax=2.0 * np.pi)
+            ax.set_title(f"Phase Mask {col + 1}", fontsize=9)
+            ax.set_xticks([])
+            ax.set_yticks([])
+            fig_field.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
 
-    fig_field.suptitle("ONN Intensity Checkpoints and Learned Phase Masks", y=0.98)
-    fig_field.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
-    fig_field.savefig(PLOT_PATH, dpi=150)
-    plt.close(fig_field)
-    print(f"saved: {PLOT_PATH}")
+        fig_field.suptitle("ONN Intensity Checkpoints and Learned Phase Masks", y=0.98)
+        fig_field.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
+        fig_field.savefig(PLOT_PATH, dpi=150)
+        plt.close(fig_field)
+        print(f"saved: {PLOT_PATH}")
 
 
 if __name__ == "__main__":

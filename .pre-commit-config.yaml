@@ -8,16 +8,23 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+      - id: notebook-sync
+        name: notebook sync
+        entry: bash -c '.venv/bin/python scripts/sync_example_notebook.py --check'
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
       - id: mypy
         name: mypy
         entry: bash -c '.venv/bin/python -m mypy src'
         language: system
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [pre-push]
 
       - id: pytest
         name: pytest
         entry: bash -c 'PYTHONPATH=src .venv/bin/python -m pytest -q'
         language: system
         pass_filenames: false
-        stages: [pre-commit]
+        stages: [pre-push]

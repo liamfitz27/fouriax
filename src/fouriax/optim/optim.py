@@ -509,18 +509,22 @@ def optimize_dataset_hybrid_module(
     seed: int = 0,
     drop_last_train: bool = False,
 ) -> HybridModuleDatasetOptResult[ModuleT, ParamsT, DecoderParamsT]:
-    """Optimize optical + decoder params over minibatches using a shared loss.
+    """Optimize optical and decoder params over minibatches using a shared loss.
 
-    Simplified wrapper behavior matches `optimize_dataset_optical_module(...)`:
-    - internal minibatching via `iter_minibatches(...)`
-    - exactly one of `batch_loss_fn` or `sample_loss_fn` must be provided
-    - validation uses the same effective batch loss, averaged over `val_data`
-    - built-in uniform reporting
+    This wrapper mirrors :func:`optimize_dataset_optical_module` but carries
+    two parameter groups: optical parameters used to build the module and
+    decoder parameters used by the hybrid loss.
 
-    Optimizer selection:
-    - pass `optimizer` directly, or
-    - pass both `optical_optimizer` and `decoder_optimizer` to build an
-      internal `optax.multi_transform(...)` with separate parameter groups.
+    Exactly one of ``batch_loss_fn`` or ``sample_loss_fn`` must be provided.
+    When ``sample_loss_fn`` is used, it is vmapped over each minibatch and then
+    averaged into a batch loss.
+
+    Optimizer configuration can be supplied in one of two ways:
+
+    - pass ``optimizer`` directly for a single optimizer over the combined
+      parameter dict
+    - pass both ``optical_optimizer`` and ``decoder_optimizer`` to build an
+      internal ``optax.multi_transform(...)`` optimizer with separate groups
     """
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")

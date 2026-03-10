@@ -40,11 +40,22 @@ def _next_power_of_two(n: int) -> int:
 
 
 def critical_distance_um(grid: Grid, spectrum: Spectrum) -> float:
-    """
-    Compute conservative critical distance separating ASM and RS regimes.
+    """Compute the critical propagation distance separating the ASM and RS regimes.
 
-    z_crit = N_eff * (dx_eff^2) / lambda_min
-    where N_eff=min(nx, ny), dx_eff=max(dx_um, dy_um), lambda_min=min(wavelengths_um)
+    The boundary is estimated as::
+
+        z_crit = N_eff * dx_eff**2 / lambda_min
+
+    where ``N_eff = min(nx, ny)``, ``dx_eff = max(dx_um, dy_um)``, and
+    ``lambda_min`` is the shortest wavelength in *spectrum*.  Distances below
+    ``z_crit`` favour ASM; distances at or above favour RS.
+
+    Args:
+        grid: Spatial sampling grid.
+        spectrum: Wavelength set.
+
+    Returns:
+        Critical distance in micrometers.
     """
     grid.validate()
     spectrum.validate()
@@ -60,11 +71,22 @@ def select_propagator_method(
     distance_um: float,
     equality_tolerance: float = 1e-6,
 ) -> str:
-    """
-    Select recommended method by critical-distance regime.
+    """Select the recommended propagation method for a given distance.
 
-    - distance < z_crit * (1 - tol) -> ASM
-    - otherwise -> RS
+    Compares *distance_um* against the critical distance (see
+    :func:`critical_distance_um`) and returns:
+
+    - ``"asm"`` when ``distance_um < z_crit * (1 - equality_tolerance)``
+    - ``"rs"`` otherwise
+
+    Args:
+        grid: Spatial sampling grid.
+        spectrum: Wavelength set.
+        distance_um: Propagation distance in micrometers (must be positive).
+        equality_tolerance: Relative tolerance around the boundary.
+
+    Returns:
+        ``"asm"`` or ``"rs"``.
     """
     if distance_um <= 0:
         raise ValueError("distance_um must be strictly positive")
@@ -82,8 +104,23 @@ def recommend_nyquist_grid(
     nyquist_factor: float = 2.0,
     min_padding_factor: float = 2.0,
 ) -> Grid:
-    """
-    Build a denser padded propagation grid from nyquist_factor and padding.
+    """Build a padded, Nyquist-safe propagation grid.
+
+    The returned grid has finer pixel spacing (if needed to satisfy the
+    Nyquist criterion for the shortest wavelength) and is zero-padded to
+    at least ``min_padding_factor`` times the original extent, rounded up
+    to the next power of two for FFT efficiency.
+
+    Args:
+        grid: Original spatial sampling grid.
+        spectrum: Wavelength set used to determine Nyquist limits.
+        nyquist_factor: Sampling density relative to the Nyquist limit.
+            A value of 2.0 means two samples per shortest half-wavelength.
+        min_padding_factor: Minimum spatial-extent multiplier for
+            zero-padding (must be ≥ 1.0).
+
+    Returns:
+        A new ``Grid`` suitable for numerically stable propagation.
     """
     grid.validate()
     spectrum.validate()
@@ -245,10 +282,29 @@ def _restore_batch_axes(
 
 @dataclass(frozen=True)
 class RSPropagator(OpticalLayer):
-    """
-    Rayleigh-Sommerfeld propagator based on convolution with the RS delta response.
+    """Rayleigh–Sommerfeld propagator via convolution with the RS impulse response.
 
-    All length quantities use micrometers (um).
+    Requires **spatial-domain** input.  Supports both scalar and Jones fields.
+    When ``use_sampling_planner`` is ``True`` (default) the field is
+    automatically resampled / padded to a Nyquist-safe grid before
+    propagation and restored to the original grid afterwards.
+
+    All length quantities are in micrometers.
+
+    Args:
+        distance_um: Propagation distance in micrometers.
+        use_sampling_planner: Whether to apply automatic Nyquist resampling.
+        nyquist_factor: Oversampling relative to the Nyquist limit.
+        min_padding_factor: Minimum padding multiplier for the propagation
+            grid.
+        precomputed_grid: Optional pre-built propagation grid, bypassing
+            the automatic planner.
+        warn_on_regime_mismatch: Emit a warning when the propagation
+            distance falls outside the recommended RS regime.
+        equality_tolerance: Tolerance for the regime boundary.
+        medium_index: Refractive index of the propagation medium.
+        na_limit: Optional numerical aperture cutoff applied in k-space
+            after propagation.
     """
 
     distance_um: float | None = None
@@ -267,6 +323,19 @@ class RSPropagator(OpticalLayer):
         wavelength_um: float,
         distance_um: float,
     ) -> jnp.ndarray:
+        """Return the Rayleigh-Sommerfeld impulse response on ``field.grid``.
+
+        Args:
+            field: Spatial-domain field whose grid defines the sampling lattice.
+            wavelength_um: Wavelength to propagate in micrometers.
+            distance_um: Propagation distance in micrometers.
+
+        Returns:
+            Complex array with shape ``(ny, nx)`` sampled on ``field.grid``.
+
+        Raises:
+            ValueError: If ``distance_um`` is not strictly positive.
+        """
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
 
@@ -280,11 +349,26 @@ class RSPropagator(OpticalLayer):
         return h.astype(jnp.complex64)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return trainable parameters exposed by this layer."""
         if self.distance_um is not None:
             return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
         return {}
 
     def forward(self, field: Field) -> Field:
+        """Propagate a spatial-domain field with the RS convolution model.
+
+        Args:
+            field: Spatial-domain input field with scalar or Jones data layout.
+
+        Returns:
+            Spatial-domain field sampled on the original input grid. If the
+            sampling planner is enabled, resampling and padding are applied
+            internally and then undone before returning.
+
+        Raises:
+            ValueError: If the input domain is wrong or propagation parameters
+                are invalid.
+        """
         distance_um = self.distance_um
         _require_domain(field, expected="spatial", layer_name="RSPropagator")
         self.validate_for(field)
@@ -366,10 +450,29 @@ class RSPropagator(OpticalLayer):
 
 @dataclass(frozen=True)
 class ASMPropagator(OpticalLayer):
-    """
-    Angular Spectrum Method (ASM) propagator.
+    """Angular Spectrum Method (ASM) propagator.
 
-    All length quantities use micrometers (um).
+    Requires **spatial-domain** input.  Internally transforms the field
+    to k-space, applies the ASM transfer function via
+    :class:`KSpacePropagator`, and transforms back.  Supports both
+    scalar and Jones fields.
+
+    When ``use_sampling_planner`` is ``True`` the field is automatically
+    resampled / padded for numerical stability.
+
+    All length quantities are in micrometers.
+
+    Args:
+        distance_um: Propagation distance in micrometers.
+        use_sampling_planner: Whether to apply automatic Nyquist resampling.
+        nyquist_factor: Oversampling relative to the Nyquist limit.
+        min_padding_factor: Minimum padding multiplier.
+        precomputed_grid: Optional pre-built propagation grid.
+        warn_on_regime_mismatch: Emit a warning when the distance falls
+            outside the recommended ASM regime.
+        equality_tolerance: Tolerance for the regime boundary.
+        medium_index: Refractive index of the propagation medium.
+        na_limit: Optional numerical aperture cutoff.
     """
 
     distance_um: float | None = None
@@ -388,6 +491,22 @@ class ASMPropagator(OpticalLayer):
         wavelength_um: float,
         distance_um: float,
     ) -> jnp.ndarray:
+        """Build the ASM transfer function for one wavelength on ``field.grid``.
+
+        Args:
+            field: Spatial-domain field whose sampling grid defines the
+                frequency lattice.
+            wavelength_um: Wavelength to propagate in micrometers.
+            distance_um: Propagation distance in micrometers.
+
+        Returns:
+            Complex array with shape ``(ny, nx)`` in reciprocal-space sampling
+            order.
+
+        Raises:
+            ValueError: If the distance, refractive index, or NA limit is
+                invalid.
+        """
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
         if self.medium_index <= 0:
@@ -415,11 +534,26 @@ class ASMPropagator(OpticalLayer):
         return transfer * na_mask.astype(jnp.complex64)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return trainable parameters exposed by this layer."""
         if self.distance_um is not None:
             return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
         return {}
 
     def forward(self, field: Field) -> Field:
+        """Propagate a spatial-domain field with the Angular Spectrum Method.
+
+        Args:
+            field: Spatial-domain input field with scalar or Jones data layout.
+
+        Returns:
+            Spatial-domain field sampled on the original input grid. Internal
+            resampling and padding are restored away before the result is
+            returned.
+
+        Raises:
+            ValueError: If the input domain is wrong or propagation parameters
+                are invalid.
+        """
         distance_um = self.distance_um
         _require_domain(field, expected="spatial", layer_name="ASMPropagator")
         self.validate_for(field)
@@ -472,10 +606,22 @@ class ASMPropagator(OpticalLayer):
 
 @dataclass(frozen=True)
 class KSpacePropagator(OpticalLayer):
-    """
-    k-space diagonal propagator using angular-spectrum phase advance.
+    """Diagonal k-space propagator using the angular-spectrum phase advance.
 
-    All length quantities use micrometers (um).
+    Requires **k-space-domain** input.  Multiplies each frequency
+    component by ``exp(j * kz * distance_um)`` where *kz* is derived
+    from the dispersion relation.  Supports scalar and Jones fields.
+
+    All length quantities are in micrometers.
+
+    Args:
+        distance_um: Propagation distance in micrometers.
+        refractive_index: Refractive index of the medium.
+        na_limit: Optional numerical aperture cutoff applied as a hard
+            k-space mask.
+        include_evanescent: If ``True``, evanescent modes are included
+            (complex *kz*). If ``False`` (default), evanescent modes are
+            zeroed out.
     """
 
     distance_um: float | None = None
@@ -489,6 +635,21 @@ class KSpacePropagator(OpticalLayer):
         wavelength_um: float,
         distance_um: float,
     ) -> jnp.ndarray:
+        """Build the diagonal k-space transfer function for one wavelength.
+
+        Args:
+            field: K-space field whose grid defines the sampled frequency axes.
+            wavelength_um: Wavelength to propagate in micrometers.
+            distance_um: Propagation distance in micrometers.
+
+        Returns:
+            Complex array with shape ``(ny, nx)`` matching the sampled k-space
+            grid.
+
+        Raises:
+            ValueError: If the distance, refractive index, or NA limit is
+                invalid.
+        """
         if distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
         if self.refractive_index <= 0:
@@ -521,11 +682,25 @@ class KSpacePropagator(OpticalLayer):
         return transfer * na_mask.astype(jnp.complex64)
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return trainable parameters exposed by this layer."""
         if self.distance_um is not None:
             return {"distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32)}
         return {}
 
     def forward(self, field: Field) -> Field:
+        """Propagate a k-space field by diagonal transfer multiplication.
+
+        Args:
+            field: K-space input field with scalar or Jones data layout.
+
+        Returns:
+            K-space field with the same shape, batch axes, and sampling metadata
+            as the input.
+
+        Raises:
+            ValueError: If the input domain is wrong or propagation parameters
+                are invalid.
+        """
         distance_um = self.distance_um
         _require_domain(field, expected="kspace", layer_name="KSpacePropagator")
         self.validate_for(field)
@@ -569,6 +744,42 @@ def plan_propagation(
     refractive_index: float = 1.0,
     na_limit: float | None = None,
 ) -> ASMPropagator | RSPropagator | KSpacePropagator:
+    """Plan a propagation layer for a given field sampling regime.
+
+    When **mode** is ``"auto"`` the function selects a propagator based on
+    the critical-distance heuristic (ASM for short distances, RS for long
+    distances).  If *input_domain* is ``"kspace"`` the returned layer is
+    always a :class:`KSpacePropagator`.
+
+    Explicit modes ``"asm"``, ``"rs"``, or ``"kspace"`` force the
+    corresponding propagator and emit a warning (if enabled) when the
+    choice falls outside the recommended regime.
+
+    All length parameters are in micrometers.
+
+    Args:
+        mode: Propagator selection strategy.
+        grid: Spatial sampling grid.
+        spectrum: Wavelength set.
+        distance_um: Propagation distance in micrometers (must be positive).
+        input_domain: Expected domain of the input field.
+        use_sampling_planner: Apply automatic Nyquist grid planning.
+        nyquist_factor: Oversampling relative to the Nyquist limit.
+        min_padding_factor: Minimum padding multiplier.
+        precomputed_grid: Optional pre-built propagation grid.
+        warn_on_regime_mismatch: Emit a warning on sub-optimal mode
+            selection.
+        equality_tolerance: Tolerance for the ASM/RS boundary.
+        medium_index: Refractive index used by ASM / RS propagators.
+        refractive_index: Refractive index used by the k-space propagator.
+        na_limit: Optional numerical aperture cutoff.
+
+    Returns:
+        A configured propagator layer ready for ``forward()``.
+
+    Raises:
+        ValueError: If *distance_um* is non-positive or *mode* is invalid.
+    """
     if distance_um <= 0:
         raise ValueError("distance_um must be strictly positive")
     if mode not in ("auto", "asm", "rs", "kspace"):

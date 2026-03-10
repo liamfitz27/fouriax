@@ -5,6 +5,12 @@ __pycache__/
 .ruff_cache/
 .venv/
 artifacts/
+docs/_build/
+docs/api/generated/
+docs/examples/notebooks/
 *.egg-info/
 src/*.egg-info/
 .vscode/
+.codex/
+*AGENTS.md
+.DS_Store
