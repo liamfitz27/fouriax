@@ -38,7 +38,7 @@ MATPLOTLIB_IMPORT_RE = re.compile(
     r"^\s*(?:import\s+matplotlib(?:\.\w+)?|from\s+matplotlib(?:\.\w+)*\s+import\s+.+)\s*$"
 )
 PLT_CLOSE_CALL_LINE_RE = re.compile(r"^(?P<indent>\s*)plt\.close\((?P<arg>[^)]*)\)\s*$")
-REPO_ROOT_SNIPPET_MARKER = "# NOTEBOOK_REPO_ROOT_SETUP"
+REPO_ROOT_SETUP_LINE = "REPO_ROOT = fx.utils.find_repo_root(_Path.cwd())"
 
 
 @dataclass
@@ -346,7 +346,7 @@ def inject_repo_root_setup(cells: list[ScriptCell]) -> list[ScriptCell]:
     """
     if not cells:
         return cells
-    if any(REPO_ROOT_SNIPPET_MARKER in cell.code for cell in cells):
+    if any(REPO_ROOT_SETUP_LINE in cell.code for cell in cells):
         return cells
 
     target_idx = None
@@ -366,23 +366,10 @@ def inject_repo_root_setup(cells: list[ScriptCell]) -> list[ScriptCell]:
 
     snippet_lines = [
         "",
-        REPO_ROOT_SNIPPET_MARKER,
         "import os",
         "from pathlib import Path as _Path",
         "",
-        "def _find_repo_root(start: _Path) -> _Path:",
-        '    for candidate in (start, *start.parents):',
-        '        if (',
-        '            (candidate / \"src\" / \"fouriax\").exists()',
-        '            and (candidate / \"README.md\").exists()',
-        "        ):",
-        "            return candidate",
-        "    raise FileNotFoundError(",
-        '        \"Could not locate repository root from current working directory. \"',
-        '        \"Expected to find src/fouriax and README.md in an ancestor.\"',
-        "    )",
-        "",
-        "REPO_ROOT = _find_repo_root(_Path.cwd())",
+        REPO_ROOT_SETUP_LINE,
         "if _Path.cwd() != REPO_ROOT:",
         "    os.chdir(REPO_ROOT)",
         "",

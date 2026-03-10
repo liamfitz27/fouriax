@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 from pathlib import Path
 
@@ -13,17 +12,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from fouriax.optics import (
-    AmplitudeMask,
-    Field,
-    Grid,
-    OpticalModule,
-    PhaseMask,
-    Spectrum,
-    plan_propagation,
-)
-from fouriax.optim import focal_spot_loss, optimize_optical_module
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Lens Optimization Example")
@@ -60,7 +51,7 @@ PLOT = not ARGS.no_plot
 
 
 # %% Helper functions
-def circular_aperture(grid: Grid, diameter_um: float) -> jnp.ndarray:
+def circular_aperture(grid: fx.Grid, diameter_um: float) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     r2 = x * x + y * y
     radius = diameter_um / 2.0
@@ -69,25 +60,25 @@ def circular_aperture(grid: Grid, diameter_um: float) -> jnp.ndarray:
 
 def main() -> None:
     # %% Setup
-    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
-    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
+    grid = fx.Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = fx.Spectrum.from_scalar(WAVELENGTH_UM)
+    field_in = fx.Field.plane_wave(grid=grid, spectrum=spectrum)
 
     aperture = circular_aperture(grid, diameter_um=APERTURE_DIAMETER_UM)
     target_xy = (grid.nx // 2, grid.ny // 2)
-    propagator = plan_propagation(
+    propagator = fx.plan_propagation(
         mode="auto",
         grid=grid,
         spectrum=spectrum,
         distance_um=DISTANCE_UM,
     )
 
-    def build_module(raw_phase_map: jnp.ndarray) -> OpticalModule:
+    def build_module(raw_phase_map: jnp.ndarray) -> fx.OpticalModule:
         phase_limited = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase_map)
-        return OpticalModule(
+        return fx.OpticalModule(
             layers=(
-                PhaseMask(phase_map_rad=phase_limited[None, :, :]),
-                AmplitudeMask(amplitude_map=aperture[None, :, :]),
+                fx.PhaseMask(phase_map_rad=phase_limited[None, :, :]),
+                fx.AmplitudeMask(amplitude_map=aperture[None, :, :]),
                 propagator,
             )
         )
@@ -96,7 +87,7 @@ def main() -> None:
     def loss_fn(raw_phase_map: jnp.ndarray) -> jnp.ndarray:
         module = build_module(raw_phase_map)
         intensity = module.forward(field_in).intensity()
-        return focal_spot_loss(
+        return fx.optim.focal_spot_loss(
             intensity=intensity,
             target_xy=target_xy,
             window_px=WINDOW_PX,
@@ -106,7 +97,7 @@ def main() -> None:
     phase_map = 0.1 * jax.random.normal(key, (grid.ny, grid.nx))
 
     optimizer = optax.adam(LR)
-    result = optimize_optical_module(
+    result = fx.optim.optimize_optical_module(
         init_params=phase_map,
         build_module=build_module,
         loss_fn=loss_fn,
@@ -123,10 +114,10 @@ def main() -> None:
     wavelength_um = float(spectrum.wavelengths_um[0])
     k = 2.0 * jnp.pi / wavelength_um
     hyperbolic_phase = -k * (jnp.sqrt(x_um * x_um + y_um * y_um + DISTANCE_UM**2) - DISTANCE_UM)
-    reference_module = OpticalModule(
+    reference_module = fx.OpticalModule(
         layers=(
-            PhaseMask(phase_map_rad=hyperbolic_phase[None, :, :]),
-            AmplitudeMask(amplitude_map=aperture[None, :, :]),
+            fx.PhaseMask(phase_map_rad=hyperbolic_phase[None, :, :]),
+            fx.AmplitudeMask(amplitude_map=aperture[None, :, :]),
             propagator,
         )
     )

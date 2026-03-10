@@ -58,19 +58,37 @@ intensity = output.intensity()  # unbatched: (num_wavelengths, ny, nx)
 ## Examples
 
 Scripts live in `examples/scripts/` with matching notebooks in `examples/notebooks/`.
+For a GitHub-friendly docs landing page, see [docs/README.md](docs/README.md).
+
+Suggested notebook path:
+
+```text
+4f_correlator
+└── 4f_edge_optimization
+
+lens_optimization
+├── sensitivity_analysis
+└── metaatom_optimization
+
+hologram_coherent_logo
+└── holography_polarized_dual
+
+incoherent_camera
+onn_mnist
+spectral_filter_optimization
+```
 
 | Example | Script | Notebook | Description |
 |---|---|---|---|
-| Lens Optimization | `lens_optimization.py` | `lens_optimization.ipynb` | Learn a phase mask to focus a plane wave |
-| 4f Correlator | `4f_correlator.py` | `4f_correlator.ipynb` | Matched-filter cross-correlation in a 4f system |
-| 4f Edge Optimization | `4f_edge_optimization.py` | `4f_edge_optimization.ipynb` | Optimize a spiral phase filter for edge detection |
-| Hybrid Super-Resolution | `hybrid_super_resolution.py` | `hybrid_super_resolution.ipynb` | Co-design a coded optical front-end and CNN decoder for single-shot super-resolution |
-| Coherent Hologram | `hologram_coherent_logo.py` | `hologram_coherent_logo.ipynb` | Phase-only hologram via GS-style optimization |
-| Polarized Holography | `holography_polarized_dual.py` | `holography_polarized_dual.ipynb` | Dual-pattern holography with Jones polarization |
-| Incoherent Camera | `incoherent_camera.py` | `incoherent_camera.ipynb` | Shift-invariant incoherent imaging simulation |
-| Meta-Atom Optimization | `metaatom_optimization.py` | `metaatom_optimization.ipynb` | Optimize meta-atom geometries for focusing |
-| ONN MNIST | `onn_mnist.py` | `onn_mnist.ipynb` | Optical neural network for MNIST classification |
-| Spectral Filter | `spectral_filter_optimization.py` | `spectral_filter_optimization.ipynb` | Multi-wavelength spectral filter design |
+| Lens Optimization | [`lens_optimization.py`](examples/scripts/lens_optimization.py) | [`lens_optimization.ipynb`](examples/notebooks/lens_optimization.ipynb) | Learn a phase mask to focus a plane wave |
+| 4f Correlator | [`4f_correlator.py`](examples/scripts/4f_correlator.py) | [`4f_correlator.ipynb`](examples/notebooks/4f_correlator.ipynb) | Matched-filter cross-correlation in a 4f system |
+| 4f Edge Optimization | [`4f_edge_optimization.py`](examples/scripts/4f_edge_optimization.py) | [`4f_edge_optimization.ipynb`](examples/notebooks/4f_edge_optimization.ipynb) | Optimize a spiral phase filter for edge detection |
+| Coherent Hologram | [`hologram_coherent_logo.py`](examples/scripts/hologram_coherent_logo.py) | [`hologram_coherent_logo.ipynb`](examples/notebooks/hologram_coherent_logo.ipynb) | Phase-only hologram via GS-style optimization |
+| Polarized Holography | [`holography_polarized_dual.py`](examples/scripts/holography_polarized_dual.py) | [`holography_polarized_dual.ipynb`](examples/notebooks/holography_polarized_dual.ipynb) | Dual-pattern holography with Jones polarization |
+| Incoherent Camera | [`incoherent_camera.py`](examples/scripts/incoherent_camera.py) | [`incoherent_camera.ipynb`](examples/notebooks/incoherent_camera.ipynb) | Shift-invariant incoherent imaging simulation |
+| Meta-Atom Optimization | [`metaatom_optimization.py`](examples/scripts/metaatom_optimization.py) | [`metaatom_optimization.ipynb`](examples/notebooks/metaatom_optimization.ipynb) | Optimize meta-atom geometries for focusing |
+| ONN MNIST | [`onn_mnist.py`](examples/scripts/onn_mnist.py) | [`onn_mnist.ipynb`](examples/notebooks/onn_mnist.ipynb) | Optical neural network for MNIST classification |
+| Spectral Filter | [`spectral_filter_optimization.py`](examples/scripts/spectral_filter_optimization.py) | [`spectral_filter_optimization.ipynb`](examples/notebooks/spectral_filter_optimization.ipynb) | Multi-wavelength spectral filter design |
 
 ## Project Structure
 
@@ -101,3 +119,4 @@ See `docs/DEVELOPMENT_WORKFLOW.md` for the full git flow and CI expectations.
 ## Architecture
 
 See `docs/ARCHITECTURE.md` for the complete design document covering the `Field` data model, layer system, propagation architecture, sensors, meta-atom layers, and execution patterns.
+For a broader docs index, see [docs/README.md](docs/README.md).

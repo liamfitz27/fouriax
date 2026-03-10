@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 from pathlib import Path
 
@@ -13,18 +12,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from fouriax.optics import (
-    ComplexMask,
-    DetectorArray,
-    Field,
-    Grid,
-    OpticalModule,
-    Spectrum,
-    ThinLens,
-)
-from fouriax.optics.propagation import ASMPropagator
-from fouriax.optim import optimize_dataset_optical_module
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="4f Edge Optimization Example")
@@ -63,12 +53,12 @@ PLOT = not ARGS.no_plot
 
 
 # %% Helper Functions
-def random_scene(key: jax.Array, grid: Grid) -> jnp.ndarray:
+def random_scene(key: jax.Array, grid: fx.Grid) -> jnp.ndarray:
     noise = jax.random.normal(key, grid.shape)
     k = jnp.fft.fftn(noise, axes=(-2, -1))
-    fx, fy = grid.frequency_grid()
+    freq_x, freq_y = grid.frequency_grid()
     sigma_freq = 1.0 / (32.0 * grid.dx_um)
-    lpf = jnp.exp(-(fx**2 + fy**2) / (2 * sigma_freq**2))
+    lpf = jnp.exp(-(freq_x**2 + freq_y**2) / (2 * sigma_freq**2))
     smooth = jnp.real(jnp.fft.ifftn(k * lpf, axes=(-2, -1)))
     return (smooth > 0).astype(jnp.float32)
 
@@ -81,16 +71,16 @@ def edge_target(scene: jnp.ndarray) -> jnp.ndarray:
     return mag / jnp.maximum(jnp.max(mag), 1e-12)
 
 
-def sampling_matched_f(grid: Grid) -> float:
+def sampling_matched_f(grid: fx.Grid) -> float:
     return N_MEDIUM * grid.nx * grid.dx_um**2 / WAVELENGTH_UM
 
 
-def analytical_spiral_phase(grid: Grid) -> jnp.ndarray:
+def analytical_spiral_phase(grid: fx.Grid) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     return jnp.arctan2(y, x) + jnp.pi  # [0, 2π], centered on optical axis
 
 
-def make_test_scene(grid: Grid) -> jnp.ndarray:
+def make_test_scene(grid: fx.Grid) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     half = grid.nx * grid.dx_um / 2.0
     scene = jnp.zeros(grid.shape, dtype=jnp.float32)
@@ -106,15 +96,15 @@ def make_test_scene(grid: Grid) -> jnp.ndarray:
 
 
 def measure_scenes(
-    module: OpticalModule,
+    module: fx.OpticalModule,
     scenes: jnp.ndarray,
-    grid: Grid,
-    spectrum: Spectrum,
+    grid: fx.Grid,
+    spectrum: fx.Spectrum,
 ) -> jnp.ndarray:
     scenes = jnp.asarray(scenes, dtype=jnp.float32)
     if scenes.ndim == 2:
         scenes = scenes[None, :, :]
-    field_in = Field(
+    field_in = fx.Field(
         data=scenes[:, None, :, :].astype(jnp.complex64),
         grid=grid,
         spectrum=spectrum,
@@ -124,30 +114,30 @@ def measure_scenes(
 
 def main() -> None:
     # %% Setup
-    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
-    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
+    grid = fx.Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = fx.Spectrum.from_scalar(WAVELENGTH_UM)
     f_um = sampling_matched_f(grid)
 
-    prop = ASMPropagator(
+    prop = fx.ASMPropagator(
         distance_um=f_um,
         use_sampling_planner=False,
         warn_on_regime_mismatch=False,
     )
-    lens = ThinLens(focal_length_um=f_um)
+    lens = fx.ThinLens(focal_length_um=f_um)
 
-    def build_module(raw_phase: jnp.ndarray) -> OpticalModule:
+    def build_module(raw_phase: jnp.ndarray) -> fx.OpticalModule:
         phase = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase)
-        return OpticalModule(
+        return fx.OpticalModule(
             layers=(
                 prop,
                 lens,
                 prop,
-                ComplexMask(phase_map_rad=phase),
+                fx.ComplexMask(phase_map_rad=phase),
                 prop,
                 lens,
                 prop,
             ),
-            sensor=DetectorArray(detector_grid=grid),
+            sensor=fx.DetectorArray(detector_grid=grid),
         )
 
     # %% Training Data
@@ -192,7 +182,7 @@ def main() -> None:
         out_n = out / jnp.maximum(jnp.max(out, axis=(-2, -1), keepdims=True), 1e-12)
         return jnp.mean((out_n - jnp.asarray(targets, dtype=jnp.float32)) ** 2)
 
-    result = optimize_dataset_optical_module(
+    result = fx.optim.optimize_dataset_optical_module(
         init_params=raw_phase,
         build_module=build_module,
         batch_loss_fn=batch_loss_fn,
