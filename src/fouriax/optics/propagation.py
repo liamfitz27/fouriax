@@ -3,8 +3,10 @@ from __future__ import annotations
 import math
 import warnings
 from dataclasses import dataclass
+from functools import lru_cache, partial
 from typing import Literal, cast
 
+import jax
 import jax.numpy as jnp
 from jax.scipy import ndimage as jndimage
 
@@ -143,6 +145,148 @@ def recommend_nyquist_grid(
     nx = _next_power_of_two(padded_nx)
     ny = _next_power_of_two(padded_ny)
     return Grid.from_extent(nx=nx, ny=ny, dx_um=dx_um, dy_um=dy_um)
+
+
+def _wavelength_key(spectrum: Spectrum) -> tuple[float, ...]:
+    return tuple(float(wavelength_um) for wavelength_um in spectrum.wavelengths_um)
+
+
+def _build_transfer_stack(
+    *,
+    grid: Grid,
+    wavelengths_um: jnp.ndarray,
+    distance_um: float,
+    refractive_index: float,
+    include_evanescent: bool,
+    na_limit: float | None,
+) -> jnp.ndarray:
+    fx, fy = grid.frequency_grid()
+    wavelengths_um = jnp.asarray(wavelengths_um, dtype=jnp.float32)
+    z = jnp.asarray(distance_um, dtype=jnp.float32)
+    n = jnp.asarray(refractive_index, dtype=jnp.float32)
+    radial_frequency = jnp.sqrt(fx * fx + fy * fy) if na_limit is not None else None
+    na_cutoff = (
+        jnp.minimum(jnp.asarray(na_limit, dtype=jnp.float32), n)
+        if na_limit is not None
+        else None
+    )
+
+    def transfer_for_wavelength(wavelength_um: jnp.ndarray) -> jnp.ndarray:
+        wl = jnp.asarray(wavelength_um, dtype=jnp.float32)
+        k = 2.0 * jnp.pi * n / wl
+        argument = 1.0 - (wl * fx / n) ** 2 - (wl * fy / n) ** 2
+        if include_evanescent:
+            kz = k * jnp.sqrt(argument.astype(jnp.complex64))
+            transfer = jnp.exp(1j * kz * z).astype(jnp.complex64)
+        else:
+            propagating = argument >= 0.0
+            kz_real = k * jnp.sqrt(jnp.maximum(argument, 0.0))
+            transfer = jnp.exp(1j * kz_real * z).astype(jnp.complex64)
+            transfer = jnp.where(propagating, transfer, 0.0 + 0.0j)
+
+        if na_limit is None:
+            return transfer
+
+        assert radial_frequency is not None
+        assert na_cutoff is not None
+        f_cut = na_cutoff / wl
+        na_mask = (radial_frequency <= f_cut).astype(jnp.float32)
+        return transfer * na_mask.astype(jnp.complex64)
+
+    return jax.vmap(transfer_for_wavelength)(wavelengths_um)
+
+
+@lru_cache(maxsize=128)
+def _cached_transfer_stack(
+    *,
+    nx: int,
+    ny: int,
+    dx_um: float,
+    dy_um: float,
+    wavelengths_key: tuple[float, ...],
+    distance_um: float,
+    refractive_index: float,
+    include_evanescent: bool,
+    na_limit: float | None,
+    backend_name: str,
+) -> jnp.ndarray:
+    del backend_name
+
+    grid = Grid.from_extent(nx=nx, ny=ny, dx_um=dx_um, dy_um=dy_um)
+    return _build_transfer_stack(
+        grid=grid,
+        wavelengths_um=jnp.asarray(wavelengths_key, dtype=jnp.float32),
+        distance_um=distance_um,
+        refractive_index=refractive_index,
+        include_evanescent=include_evanescent,
+        na_limit=na_limit,
+    )
+
+
+def _transfer_stack_for(
+    *,
+    grid: Grid,
+    spectrum: Spectrum,
+    distance_um: float,
+    refractive_index: float,
+    include_evanescent: bool,
+    na_limit: float | None,
+) -> jnp.ndarray:
+    try:
+        wavelengths_key = _wavelength_key(spectrum)
+        distance_key = float(distance_um)
+        refractive_index_key = float(refractive_index)
+        na_limit_key = None if na_limit is None else float(na_limit)
+    except (TypeError, jax.errors.ConcretizationTypeError):
+        return _build_transfer_stack(
+            grid=grid,
+            wavelengths_um=spectrum.wavelengths_um,
+            distance_um=distance_um,
+            refractive_index=refractive_index,
+            include_evanescent=include_evanescent,
+            na_limit=na_limit,
+        )
+
+    return _cached_transfer_stack(
+        nx=grid.nx,
+        ny=grid.ny,
+        dx_um=float(grid.dx_um),
+        dy_um=float(grid.dy_um),
+        wavelengths_key=wavelengths_key,
+        distance_um=distance_key,
+        refractive_index=refractive_index_key,
+        include_evanescent=bool(include_evanescent),
+        na_limit=na_limit_key,
+        backend_name=jax.default_backend(),
+    )
+
+
+@partial(jax.jit, static_argnames=("is_jones",))
+def _apply_transfer_stack_flat(
+    flat_data: jnp.ndarray,
+    transfer_stack: jnp.ndarray,
+    *,
+    is_jones: bool,
+) -> jnp.ndarray:
+    if is_jones:
+        return flat_data * transfer_stack[None, :, None, :, :]
+    return flat_data * transfer_stack[None, :, :, :]
+
+
+@partial(jax.jit, static_argnames=("is_jones",))
+def _asm_propagate_flat(
+    flat_data: jnp.ndarray,
+    transfer_stack: jnp.ndarray,
+    *,
+    is_jones: bool,
+) -> jnp.ndarray:
+    kspace_data = jnp.fft.fftn(flat_data, axes=(-2, -1))
+    propagated_kspace = _apply_transfer_stack_flat(
+        kspace_data,
+        transfer_stack,
+        is_jones=is_jones,
+    )
+    return jnp.fft.ifftn(propagated_kspace, axes=(-2, -1))
 
 
 def _resample_2d_to_grid(
@@ -484,6 +628,7 @@ class ASMPropagator(OpticalLayer):
     equality_tolerance: float = 1e-6
     medium_index: float = 1.0
     na_limit: float | None = None
+    precomputed_transfer_stack: jnp.ndarray | None = None
 
     def transfer_function(
         self,
@@ -589,19 +734,33 @@ class ASMPropagator(OpticalLayer):
                 min_padding_factor=self.min_padding_factor,
             )
         work_field = _prepare_field_with_grid(field, target_grid)
-
-        from fouriax.optics.layers import FourierTransform, InverseFourierTransform
-
-        k_field = FourierTransform().forward(work_field)
-        k_layer = KSpacePropagator(
-            distance_um=distance_um,
-            refractive_index=self.medium_index,
-            na_limit=self.na_limit,
-            include_evanescent=True,
+        flat_data, batch_shape = _flatten_batch_axes(work_field)
+        transfer_stack = self.precomputed_transfer_stack
+        if transfer_stack is None:
+            transfer_stack = _transfer_stack_for(
+                grid=work_field.grid,
+                spectrum=work_field.spectrum,
+                distance_um=distance_um,
+                refractive_index=self.medium_index,
+                include_evanescent=True,
+                na_limit=self.na_limit,
+            )
+        propagated_flat = _asm_propagate_flat(
+            flat_data,
+            transfer_stack,
+            is_jones=work_field.is_jones,
         )
-        propagated_k = k_layer.forward(k_field)
-        propagated_spatial = InverseFourierTransform().forward(propagated_k)
-        return _restore_to_original_grid(propagated_spatial, original_grid)
+        data = _restore_batch_axes(work_field, propagated_flat, batch_shape)
+        propagated_field = Field(
+            data=data,
+            grid=work_field.grid,
+            spectrum=work_field.spectrum,
+            polarization_mode=work_field.polarization_mode,
+            domain="spatial",
+            kx_pixel_size_cyc_per_um=work_field.kx_pixel_size_cyc_per_um,
+            ky_pixel_size_cyc_per_um=work_field.ky_pixel_size_cyc_per_um,
+        )
+        return _restore_to_original_grid(propagated_field, original_grid)
 
 
 @dataclass(frozen=True)
@@ -628,6 +787,7 @@ class KSpacePropagator(OpticalLayer):
     refractive_index: float = 1.0
     na_limit: float | None = None
     include_evanescent: bool = False
+    precomputed_transfer_stack: jnp.ndarray | None = None
 
     def transfer_function(
         self,
@@ -710,12 +870,22 @@ class KSpacePropagator(OpticalLayer):
             raise ValueError("distance_um must be strictly positive")
 
         flat_data, batch_shape = _flatten_batch_axes(field)
-        outputs = []
-        for i, wavelength_um in enumerate(field.spectrum.wavelengths_um):
-            transfer = self.transfer_function(field, wavelength_um, distance_um)
-            outputs.append(flat_data[:, i] * transfer)
-
-        data = _restore_batch_axes(field, jnp.stack(outputs, axis=1), batch_shape)
+        transfer_stack = self.precomputed_transfer_stack
+        if transfer_stack is None:
+            transfer_stack = _transfer_stack_for(
+                grid=field.grid,
+                spectrum=field.spectrum,
+                distance_um=distance_um,
+                refractive_index=self.refractive_index,
+                include_evanescent=self.include_evanescent,
+                na_limit=self.na_limit,
+            )
+        propagated_flat = _apply_transfer_stack_flat(
+            flat_data,
+            transfer_stack,
+            is_jones=field.is_jones,
+        )
+        data = _restore_batch_axes(field, propagated_flat, batch_shape)
         return Field(
             data=data,
             grid=field.grid,
@@ -785,11 +955,39 @@ def plan_propagation(
     if mode not in ("auto", "asm", "rs", "kspace"):
         raise ValueError("mode must be one of: auto, asm, rs, kspace")
 
+    def _planned_transfer_stack(
+        *,
+        propagation_grid: Grid,
+        propagation_spectrum: Spectrum,
+        propagation_distance_um: float,
+        propagation_refractive_index: float,
+        include_evanescent: bool,
+    ) -> jnp.ndarray | None:
+        try:
+            return _transfer_stack_for(
+                grid=propagation_grid,
+                spectrum=propagation_spectrum,
+                distance_um=propagation_distance_um,
+                refractive_index=propagation_refractive_index,
+                include_evanescent=include_evanescent,
+                na_limit=na_limit,
+            )
+        except (TypeError, jax.errors.ConcretizationTypeError):
+            return None
+
     if mode == "kspace":
+        transfer_stack = _planned_transfer_stack(
+            propagation_grid=grid,
+            propagation_spectrum=spectrum,
+            propagation_distance_um=distance_um,
+            propagation_refractive_index=refractive_index,
+            include_evanescent=False,
+        )
         return KSpacePropagator(
             distance_um=distance_um,
             refractive_index=refractive_index,
             na_limit=na_limit,
+            precomputed_transfer_stack=transfer_stack,
         )
 
     def _planned_grid() -> Grid | None:
@@ -832,6 +1030,13 @@ def plan_propagation(
 
     if mode == "asm":
         _warn_if_explicit_mode_mismatch("asm")
+        transfer_stack = _planned_transfer_stack(
+            propagation_grid=selection_grid,
+            propagation_spectrum=spectrum,
+            propagation_distance_um=distance_um,
+            propagation_refractive_index=medium_index,
+            include_evanescent=True,
+        )
         return ASMPropagator(
             distance_um=distance_um,
             use_sampling_planner=False,
@@ -842,6 +1047,7 @@ def plan_propagation(
             equality_tolerance=equality_tolerance,
             medium_index=medium_index,
             na_limit=na_limit,
+            precomputed_transfer_stack=transfer_stack,
         )
     if mode == "rs":
         _warn_if_explicit_mode_mismatch("rs")
@@ -858,10 +1064,18 @@ def plan_propagation(
         )
 
     if input_domain == "kspace":
+        transfer_stack = _planned_transfer_stack(
+            propagation_grid=grid,
+            propagation_spectrum=spectrum,
+            propagation_distance_um=distance_um,
+            propagation_refractive_index=refractive_index,
+            include_evanescent=False,
+        )
         return KSpacePropagator(
             distance_um=distance_um,
             refractive_index=refractive_index,
             na_limit=na_limit,
+            precomputed_transfer_stack=transfer_stack,
         )
 
     method = cast(
@@ -874,6 +1088,13 @@ def plan_propagation(
         ),
     )
     if method == "asm":
+        transfer_stack = _planned_transfer_stack(
+            propagation_grid=selection_grid,
+            propagation_spectrum=spectrum,
+            propagation_distance_um=distance_um,
+            propagation_refractive_index=medium_index,
+            include_evanescent=True,
+        )
         return ASMPropagator(
             distance_um=distance_um,
             use_sampling_planner=False,
@@ -884,6 +1105,7 @@ def plan_propagation(
             equality_tolerance=equality_tolerance,
             medium_index=medium_index,
             na_limit=na_limit,
+            precomputed_transfer_stack=transfer_stack,
         )
     return RSPropagator(
         distance_um=distance_um,

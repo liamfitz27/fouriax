@@ -25,6 +25,10 @@ def test_lens_optimization():
     run_script("lens_optimization.py", ["--grid-n", "32", "--steps", "2", "--no-plot"])
 
 
+def test_basic_propagation():
+    run_script("basic_propagation.py", ["--grid-n", "64", "--no-plot"])
+
+
 def test_4f_correlator():
     run_script("4f_correlator.py", ["--grid-n", "32", "--no-plot"])
 

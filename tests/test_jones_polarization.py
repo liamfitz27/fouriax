@@ -51,7 +51,7 @@ def test_k_jones_matrix_layer_requires_kspace():
 
 def test_jones_propagation_matches_scalar_per_component():
     grid = Grid.from_extent(nx=12, ny=10, dx_um=1.0, dy_um=1.0)
-    spectrum = Spectrum.from_scalar(0.532)
+    spectrum = Spectrum.from_array(jnp.array([0.532, 0.633], dtype=jnp.float32))
     jones = Field.plane_wave_jones(grid=grid, spectrum=spectrum, ex=1.2 + 0.3j, ey=-0.7 + 0.2j)
     scalar_ex = Field(data=jones.data[:, 0], grid=grid, spectrum=spectrum)
     scalar_ey = Field(data=jones.data[:, 1], grid=grid, spectrum=spectrum)

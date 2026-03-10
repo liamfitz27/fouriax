@@ -1,11 +1,22 @@
 # Fouriax User Guide
 
 Welcome to **fouriax**, a differentiable free-space optics library for JAX. 
-This guide will walk you through building a system, running an optimization, using polarization (Jones mode), using meta-atoms, and reading sensor output.
+This guide will walk you through building a system, choosing propagation,
+running an optimization, using polarization (Jones mode), using meta-atoms, and
+reading sensor output.
 
-## 1. Basic Setup & Differentiable Forward Pass
+## 1. First Optical System
 
-An optical stack in `fouriax` consists of creating a spatial `Grid`, assigning a `Spectrum` (wavelengths), initializing an input `Field`, passing it through an `OpticalModule`, and collecting the result with a `Sensor`.
+An optical stack in `fouriax` consists of:
+
+- a `Grid`, which defines the sampled spatial coordinates
+- a `Spectrum`, which defines the wavelength channels
+- a `Field`, which stores the complex optical wave on that grid
+- one or more `OpticalLayer`s, composed into an `OpticalModule`
+- optional readout through a `Detector` or `DetectorArray`
+
+This is the simplest non-optimization starting point and the best place to
+learn the basic object model before moving on to Optax-based examples.
 
 ```python
 import jax
@@ -19,12 +30,12 @@ spectrum = fx.Spectrum.from_scalar(0.532)
 # 2. Setup initial plane wave field
 field = fx.Field.plane_wave(grid=grid, spectrum=spectrum)
 
-# 3. Create components: Phase mask and propagator
+# 3. Create components: phase mask and propagator
 rng = jax.random.PRNGKey(0)
 initial_phase = jnp.zeros((64, 64))
 phase_layer = fx.PhaseMask(phase_map_rad=initial_phase)
 
-# Automatic propagator selection (Angular Spectrum or Rayleigh-Sommerfeld)
+# plan_propagation(...) is the recommended high-level entry point
 propagator = fx.plan_propagation(
     mode="auto", grid=grid, spectrum=spectrum, distance_um=1000.0,
 )
@@ -38,9 +49,41 @@ field_out = module.forward(field)
 intensity = detector.measure(field_out)
 ```
 
+Why `plan_propagation(...)` is recommended:
+
+- it chooses a suitable propagator when `mode="auto"`
+- it plans the working propagation grid when sampled propagation needs padding or finer spacing
+- for ASM and k-space propagation, it precomputes the diagonal transfer stack automatically, so repeated fixed-grid, fixed-distance calls reuse that data by default
+
+In other words, `plan_propagation(...)` is not just a convenience wrapper. It is
+the intended high-level API for efficient repeated propagation, especially in
+optimization examples where the same `grid`, `spectrum`, and `distance_um` are
+reused for many forward passes.
+
+If you already know you want ASM, you should still usually write:
+
+```python
+propagator = fx.plan_propagation(
+    mode="asm",
+    grid=grid,
+    spectrum=spectrum,
+    distance_um=1000.0,
+)
+```
+
+Use `ASMPropagator(...)`, `RSPropagator(...)`, or `KSpacePropagator(...)`
+directly only when you need manual low-level control over the propagation
+implementation.
+
 ## 2. Gradient-Based Optimization
 
-Since every layer is fully traceable in JAX, you can define a loss function and compute gradients with respect to the system parameters. Fouriax provides lightweight wrappers in `fx.optim` for Optax training loops.
+Since every layer is fully traceable in JAX, you can define a loss function and
+compute gradients with respect to the system parameters. Fouriax provides
+lightweight wrappers in `fx.optim` for Optax training loops.
+
+The usual pattern is to create the propagator once with `plan_propagation(...)`
+outside the loss, then reuse that same planned propagator through all optimizer
+steps.
 
 ```python
 import optax
