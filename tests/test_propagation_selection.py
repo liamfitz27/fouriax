@@ -1,5 +1,6 @@
 from dataclasses import replace
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from scipy.special import j1
@@ -186,6 +187,8 @@ def test_plan_propagation_uses_kspace_model_for_kspace_input():
 
     np.testing.assert_allclose(np.asarray(out_auto.data), np.asarray(out_k.data), atol=1e-6)
     assert out_auto.domain == "kspace"
+    assert planned.precomputed_transfer_stack is not None
+    assert planned.precomputed_transfer_stack.shape == (spectrum.size, grid.ny, grid.nx)
 
 
 def test_plan_propagation_rejects_invalid_mode():
@@ -246,3 +249,50 @@ def test_plan_propagation_auto_selects_rs_for_far_field():
         spectrum=spectrum,
     )
     assert isinstance(p, RSPropagator)
+
+
+def test_plan_propagation_auto_precomputes_transfer_for_fixed_asm_case():
+    grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_array(jnp.array([0.532, 0.633], dtype=jnp.float32))
+    z_crit = critical_distance_um(grid=grid, spectrum=spectrum)
+    distance_um = 0.5 * z_crit
+    field = Field.plane_wave(grid=grid, spectrum=spectrum)
+
+    planned = plan_propagation(
+        mode="auto",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+        use_sampling_planner=False,
+    )
+
+    assert isinstance(planned, ASMPropagator)
+    assert planned.precomputed_transfer_stack is not None
+    assert planned.precomputed_transfer_stack.shape == (spectrum.size, grid.ny, grid.nx)
+
+    ref = ASMPropagator(use_sampling_planner=False, distance_um=distance_um).forward(field)
+    out = planned.forward(field)
+    np.testing.assert_allclose(np.asarray(out.data), np.asarray(ref.data), atol=1e-6)
+
+
+def test_plan_propagation_explicit_asm_precomputes_transfer_stack():
+    grid = Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_array(jnp.array([0.532, 0.633], dtype=jnp.float32))
+    distance_um = 25.0
+    field = Field.plane_wave(grid=grid, spectrum=spectrum)
+
+    planned = plan_propagation(
+        mode="asm",
+        grid=grid,
+        spectrum=spectrum,
+        distance_um=distance_um,
+        use_sampling_planner=False,
+    )
+
+    assert isinstance(planned, ASMPropagator)
+    assert planned.precomputed_transfer_stack is not None
+    assert planned.precomputed_transfer_stack.shape == (spectrum.size, grid.ny, grid.nx)
+
+    ref = ASMPropagator(use_sampling_planner=False, distance_um=distance_um).forward(field)
+    out = planned.forward(field)
+    np.testing.assert_allclose(np.asarray(out.data), np.asarray(ref.data), atol=1e-6)

@@ -12,7 +12,7 @@ Documentation: <https://liamfitz27.github.io/fouriax/>
 ## Features
 
 - **Composable optical stack** — build systems from `OpticalLayer` transforms composed in an `OpticalModule`, with explicit spatial ↔ k-space domain transitions via `FourierTransform` / `InverseFourierTransform`.
-- **Propagation** — Angular Spectrum Method (`ASMPropagator`), Rayleigh–Sommerfeld (`RSPropagator`), and k-space transfer function (`KSpacePropagator`). Automatic method selection via `plan_propagation()`.
+- **Propagation** — Angular Spectrum Method (`ASMPropagator`), Rayleigh–Sommerfeld (`RSPropagator`), and k-space transfer function (`KSpacePropagator`). `plan_propagation()` is the recommended high-level entry point: it selects the propagator, plans the working grid, and precomputes reusable diagonal transfer data for ASM and k-space propagation.
 - **Modulation layers** — `PhaseMask`, `AmplitudeMask`, `ComplexMask`, `ThinLens`, plus k-space equivalents (`KSpacePhaseMask`, `KSpaceAmplitudeMask`, `KSpaceComplexMask`).
 - **Jones polarization** — full 2×2 Jones matrix layers (`JonesMatrixLayer`, `KJonesMatrixLayer`) and per-channel field diagnostics.
 - **Meta-atom libraries** — wavelength- and geometry-parameterized lookup tables with multilinear interpolation (`MetaAtomLibrary`, `MetaAtomInterpolationLayer`).
@@ -32,6 +32,11 @@ pip install -e ".[dev]"
 Requires Python ≥ 3.12. Core dependencies: JAX, Flax, Optax, NumPy, Matplotlib.
 
 ## Quickstart
+
+For most workflows, start with `plan_propagation(...)` rather than constructing
+`ASMPropagator` or `RSPropagator` directly. It is the intended entry point when
+the simulation setup is fixed across repeated forward passes, especially in
+optimization loops.
 
 ```python
 import jax
@@ -57,30 +62,74 @@ output = module.forward(field)
 intensity = output.intensity()  # unbatched: (num_wavelengths, ny, nx)
 ```
 
+Why `plan_propagation(...)`:
+
+- It chooses between ASM and RS from the sampling regime when `mode="auto"`.
+- It applies the propagation-grid planning needed for stable sampled propagation.
+- For ASM and k-space propagation, it precomputes the diagonal transfer stack once and reuses it across repeated calls.
+
+So even when you know you want ASM, prefer:
+
+```python
+propagator = fx.plan_propagation(
+    mode="asm",
+    grid=grid,
+    spectrum=spectrum,
+    distance_um=1000.0,
+)
+```
+
+and reach for `ASMPropagator(...)` or `RSPropagator(...)` directly only when
+you specifically need manual low-level control.
+
 ## Examples
 
 Scripts live in `examples/scripts/` with matching notebooks in `examples/notebooks/`.
 
-Suggested notebook path:
+Recommended example order:
 
 ```text
-4f_correlator
-└── 4f_edge_optimization
+basic_propagation
 
+lens_optimization
+
+4f_correlator
+or
+hologram_coherent_logo
+or
+incoherent_camera
+
+then the family extensions and more specialized examples
+```
+
+Example families:
+
+```text
 lens_optimization
 ├── sensitivity_analysis
 └── metaatom_optimization
+
+4f_correlator
+└── 4f_edge_optimization
 
 hologram_coherent_logo
 └── holography_polarized_dual
 
 incoherent_camera
-onn_mnist
 spectral_filter_optimization
+onn_mnist
 ```
+
+Suggested progression:
+
+- Start with `basic_propagation` to learn the core objects: `Grid`, `Spectrum`, `Field`, `OpticalModule`, `Detector`, and `plan_propagation()`.
+- Move to `lens_optimization` for the main differentiable-optics workflow used across the library.
+- Then choose a direction: `4f_correlator` for Fourier optics, `hologram_coherent_logo` for phase-only design, or `incoherent_camera` for incoherent imaging.
+- After that, use the child notebooks and more specialized examples as extensions.
 
 | Example | Script | Notebook | Description |
 |---|---|---|---|
+| Basic Propagation | [`basic_propagation.py`](examples/scripts/basic_propagation.py) | [`basic_propagation.ipynb`](examples/notebooks/basic_propagation.ipynb) | Minimal optical stack using `Grid`, `Field`, `ThinLens`, and `plan_propagation()` |
 | Lens Optimization | [`lens_optimization.py`](examples/scripts/lens_optimization.py) | [`lens_optimization.ipynb`](examples/notebooks/lens_optimization.ipynb) | Learn a phase mask to focus a plane wave |
 | 4f Correlator | [`4f_correlator.py`](examples/scripts/4f_correlator.py) | [`4f_correlator.ipynb`](examples/notebooks/4f_correlator.ipynb) | Matched-filter cross-correlation in a 4f system |
 | 4f Edge Optimization | [`4f_edge_optimization.py`](examples/scripts/4f_edge_optimization.py) | [`4f_edge_optimization.ipynb`](examples/notebooks/4f_edge_optimization.ipynb) | Optimize a spiral phase filter for edge detection |
