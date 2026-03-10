@@ -86,7 +86,7 @@ extensions = [
     "sphinx.ext.napoleon",
 ]
 
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "README.md", "Thumbs.db", ".DS_Store"]
 source_suffix = {
     ".rst": "restructuredtext",
     ".md": "myst-nb",

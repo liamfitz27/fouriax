@@ -6,21 +6,21 @@ The `docs/` tree is authored for Sphinx, so some files in this directory contain
 
 ## Core Docs
 
-- [Project README](../README.md)
-- [User Guide](./USER_GUIDE.md)
-- [Architecture](./ARCHITECTURE.md)
-- [Development Workflow](./DEVELOPMENT_WORKFLOW.md)
-- [TODO](./TODO.md)
+- [Project README](https://github.com/liamfitz27/fouriax/blob/main/README.md)
+- [User Guide](https://github.com/liamfitz27/fouriax/blob/main/docs/USER_GUIDE.md)
+- [Architecture](https://github.com/liamfitz27/fouriax/blob/main/docs/ARCHITECTURE.md)
+- [Development Workflow](https://github.com/liamfitz27/fouriax/blob/main/docs/DEVELOPMENT_WORKFLOW.md)
+- [TODO](https://github.com/liamfitz27/fouriax/blob/main/docs/TODO.md)
 
 ## API Reference Source
 
 These pages define the Sphinx API structure, but GitHub will show the raw MyST content rather than the built reference site:
 
-- [API Index](./api/index.md)
-- [Core Data Model](./api/core.md)
-- [Layers](./api/layers.md)
-- [Propagation and Planning](./api/propagation.md)
-- [Advanced Utilities](./api/advanced.md)
+- [API Index](https://github.com/liamfitz27/fouriax/blob/main/docs/api/index.md)
+- [Core Data Model](https://github.com/liamfitz27/fouriax/blob/main/docs/api/core.md)
+- [Layers](https://github.com/liamfitz27/fouriax/blob/main/docs/api/layers.md)
+- [Propagation and Planning](https://github.com/liamfitz27/fouriax/blob/main/docs/api/propagation.md)
+- [Advanced Utilities](https://github.com/liamfitz27/fouriax/blob/main/docs/api/advanced.md)
 
 ## Examples
 
@@ -28,29 +28,29 @@ The runnable scripts are the source of truth. The notebooks are synced tutorial 
 
 ### Scripts
 
-- [4f Correlator](../examples/scripts/4f_correlator.py)
-- [4f Edge Optimization](../examples/scripts/4f_edge_optimization.py)
-- [Coherent Hologram](../examples/scripts/hologram_coherent_logo.py)
-- [Polarized Holography](../examples/scripts/holography_polarized_dual.py)
-- [Incoherent Camera](../examples/scripts/incoherent_camera.py)
-- [Lens Optimization](../examples/scripts/lens_optimization.py)
-- [Meta-Atom Optimization](../examples/scripts/metaatom_optimization.py)
-- [ONN MNIST](../examples/scripts/onn_mnist.py)
-- [Sensitivity Analysis](../examples/scripts/sensitivity_analysis.py)
-- [Spectral Filter Optimization](../examples/scripts/spectral_filter_optimization.py)
+- [4f Correlator](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/4f_correlator.py)
+- [4f Edge Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/4f_edge_optimization.py)
+- [Coherent Hologram](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/hologram_coherent_logo.py)
+- [Polarized Holography](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/holography_polarized_dual.py)
+- [Incoherent Camera](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/incoherent_camera.py)
+- [Lens Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/lens_optimization.py)
+- [Meta-Atom Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/metaatom_optimization.py)
+- [ONN MNIST](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/onn_mnist.py)
+- [Sensitivity Analysis](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/sensitivity_analysis.py)
+- [Spectral Filter Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/scripts/spectral_filter_optimization.py)
 
 ### Notebooks
 
-- [4f Correlator](../examples/notebooks/4f_correlator.ipynb)
-- [4f Edge Optimization](../examples/notebooks/4f_edge_optimization.ipynb)
-- [Coherent Hologram](../examples/notebooks/hologram_coherent_logo.ipynb)
-- [Polarized Holography](../examples/notebooks/holography_polarized_dual.ipynb)
-- [Incoherent Camera](../examples/notebooks/incoherent_camera.ipynb)
-- [Lens Optimization](../examples/notebooks/lens_optimization.ipynb)
-- [Meta-Atom Optimization](../examples/notebooks/metaatom_optimization.ipynb)
-- [ONN MNIST](../examples/notebooks/onn_mnist.ipynb)
-- [Sensitivity Analysis](../examples/notebooks/sensitivity_analysis.ipynb)
-- [Spectral Filter Optimization](../examples/notebooks/spectral_filter_optimization.ipynb)
+- [4f Correlator](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/4f_correlator.ipynb)
+- [4f Edge Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/4f_edge_optimization.ipynb)
+- [Coherent Hologram](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/hologram_coherent_logo.ipynb)
+- [Polarized Holography](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/holography_polarized_dual.ipynb)
+- [Incoherent Camera](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/incoherent_camera.ipynb)
+- [Lens Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/lens_optimization.ipynb)
+- [Meta-Atom Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/metaatom_optimization.ipynb)
+- [ONN MNIST](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/onn_mnist.ipynb)
+- [Sensitivity Analysis](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/sensitivity_analysis.ipynb)
+- [Spectral Filter Optimization](https://github.com/liamfitz27/fouriax/blob/main/examples/notebooks/spectral_filter_optimization.ipynb)
 
 ## Building the Docs Locally
 
