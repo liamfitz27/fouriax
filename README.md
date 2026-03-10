@@ -4,6 +4,8 @@ Differentiable free-space optics for JAX.
 
 **fouriax** is a JAX library for simulating and optimizing coherent and incoherent optical systems with automatic differentiation. It provides composable layers for wave propagation, phase/amplitude modulation, polarization (Jones calculus), meta-atom lookup tables, and sensor readout — all fully traceable through JAX for gradient-based inverse design.
 
+Documentation: <https://liamfitz27.github.io/fouriax/>
+
 > [!WARNING]
 > This project is almost entirely vibecoded. Expect rough edges, inconsistent design decisions, incomplete validation, and APIs that may change substantially.
 
@@ -58,7 +60,6 @@ intensity = output.intensity()  # unbatched: (num_wavelengths, ny, nx)
 ## Examples
 
 Scripts live in `examples/scripts/` with matching notebooks in `examples/notebooks/`.
-For a GitHub-friendly docs landing page, see [docs/README.md](docs/README.md).
 
 Suggested notebook path:
 
@@ -119,4 +120,3 @@ See `docs/DEVELOPMENT_WORKFLOW.md` for the full git flow and CI expectations.
 ## Architecture
 
 See `docs/ARCHITECTURE.md` for the complete design document covering the `Field` data model, layer system, propagation architecture, sensors, meta-atom layers, and execution patterns.
-For a broader docs index, see [docs/README.md](docs/README.md).
