@@ -1,7 +1,9 @@
-"""Lightweight helper utilities for optimization in example scripts and notebooks.
+"""Optimisation helpers for gradient-based inverse design.
 
-These are intentionally small wrappers around common NumPy/JAX/Optax patterns
-to reduce duplication in examples. They are not part of the core optics API.
+Provides training loops, dataset utilities, loss functions, and result
+containers built on JAX and Optax.  These are convenience wrappers used
+by the example scripts and notebooks; they are not part of the core
+optics simulation API.
 """
 
 from fouriax.optim.data import (

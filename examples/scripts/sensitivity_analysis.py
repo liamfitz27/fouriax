@@ -15,7 +15,6 @@ from fouriax.analysis import (
     cramer_rao_bound,
     d_optimality,
     fisher_information,
-    parameter_tolerance,
     sensitivity_map,
 )
 from fouriax.optics import (
@@ -41,6 +40,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nominal-direction-deg", type=float, default=0.0)
     parser.add_argument("--stretch-factor", type=float, default=1.5)
     parser.add_argument("--input-count-scale", type=float, default=1000.0)
+    parser.add_argument(
+        "--sensitivity-pool",
+        type=int,
+        default=4,
+        help=(
+            "Average-pooling factor used before design-sensitivity Jacobians are formed. "
+            "Higher values reduce memory usage substantially."
+        ),
+    )
     parser.add_argument("--no-plot", action="store_true", help="Disable plotting")
     return parser.parse_args()
 
@@ -59,6 +67,7 @@ NOMINAL_ANGLE_RAD = ARGS.nominal_angle_rad
 NOMINAL_DIRECTION_DEG = ARGS.nominal_direction_deg
 STRETCH_FACTOR = ARGS.stretch_factor
 INPUT_COUNT_SCALE = ARGS.input_count_scale
+SENSITIVITY_POOL = ARGS.sensitivity_pool
 PLOT = not ARGS.no_plot
 
 
@@ -74,8 +83,27 @@ def stretched_hyperbolic_phase(
     return -k * (jnp.sqrt(stretch_factor * x * x + y * y + distance_um**2) - distance_um)
 
 
+def pooled_metric(image: jnp.ndarray, pool: int) -> jnp.ndarray:
+    if pool <= 1:
+        return image.ravel()
+    if image.shape[0] % pool != 0 or image.shape[1] % pool != 0:
+        raise ValueError(
+            "sensitivity_pool must divide both image dimensions; "
+            f"got pool={pool} for shape={image.shape}"
+        )
+    pooled = image.reshape(
+        image.shape[0] // pool,
+        pool,
+        image.shape[1] // pool,
+        pool,
+    ).mean(axis=(1, 3))
+    return pooled.ravel()
+
+
 # %% Setup
 def main() -> None:
+    if SENSITIVITY_POOL <= 0:
+        raise ValueError("sensitivity_pool must be strictly positive")
     grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
     spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
     propagator = plan_propagation(
@@ -145,11 +173,14 @@ def main() -> None:
 
     # %% Design Sensitivity Analysis
     print("Computing design sensitivity (per-pixel phase sensitivity)...")
-    sens = sensitivity_map(forward_intensity, phase)
+    def metric_fn(output: jnp.ndarray) -> jnp.ndarray:
+        return pooled_metric(output, SENSITIVITY_POOL)
+
+    sens = sensitivity_map(forward_intensity, phase, metric_fn=metric_fn)
     sens_np = np.asarray(sens)
 
     print("Computing fabrication tolerance map...")
-    tol = parameter_tolerance(forward_intensity, phase, target_change=0.01)
+    tol = 0.01 / jnp.maximum(sens, 1e-12)
     tol_np = np.asarray(tol)
 
     # %% Plot Results

@@ -14,7 +14,23 @@ from fouriax.optics.model import Field
 
 @dataclass(frozen=True)
 class MetaAtomLibrary:
-    """Regular-grid meta-atom transmission library over wavelength and geometry axes."""
+    """Regular-grid meta-atom transmission library over wavelength and geometry axes.
+
+    Stores complex transmission coefficients on a structured grid of
+    wavelengths and one or more geometry parameter axes (e.g. pillar
+    width, height).  Transmission at arbitrary geometry/wavelength
+    points is obtained by multilinear interpolation.
+
+    Args:
+        wavelengths_um: 1-D array of library wavelengths in micrometers,
+            used as the spectral interpolation axis.
+        parameter_axes: Tuple of 1-D arrays, each defining a strictly
+            increasing geometry axis in physical units.
+        transmission_real: Real part of the complex transmission with
+            shape ``(num_wavelengths, p1, p2, ..., pk)``.
+        transmission_imag: Imaginary part, same shape as
+            ``transmission_real``.
+    """
 
     wavelengths_um: jnp.ndarray
     parameter_axes: tuple[jnp.ndarray, ...]
@@ -28,6 +44,17 @@ class MetaAtomLibrary:
         parameter_axes: tuple[jnp.ndarray, ...],
         transmission_complex: jnp.ndarray,
     ) -> "MetaAtomLibrary":
+        """Build a library from a complex-valued transmission array.
+
+        Args:
+            wavelengths_um: 1-D wavelength array in micrometers.
+            parameter_axes: Tuple of 1-D geometry axes.
+            transmission_complex: Complex array with shape
+                ``(num_wavelengths, p1, p2, ..., pk)``.
+
+        Returns:
+            Validated library contents split into real and imaginary tensors.
+        """
         transmission = jnp.asarray(transmission_complex)
         return cls(
             wavelengths_um=jnp.asarray(wavelengths_um, dtype=jnp.float32),
@@ -38,13 +65,21 @@ class MetaAtomLibrary:
 
     @property
     def num_parameters(self) -> int:
+        """Number of geometry parameters spanned by the library."""
         return len(self.parameter_axes)
 
     @property
     def parameter_shape(self) -> tuple[int, ...]:
+        """Grid size along each geometry-parameter axis."""
         return tuple(int(axis.shape[0]) for axis in self.parameter_axes)
 
     def validate(self) -> None:
+        """Validate wavelength axes, geometry axes, and transmission tensor shapes.
+
+        Raises:
+            ValueError: If axis dimensionality, monotonicity, or transmission
+                shapes do not match the library definition.
+        """
         if self.wavelengths_um.ndim != 1:
             raise ValueError("wavelengths_um must be a 1D array")
         if self.wavelengths_um.size == 0:
@@ -74,6 +109,11 @@ class MetaAtomLibrary:
             )
 
     def transmission_complex(self) -> jnp.ndarray:
+        """Reconstruct the full complex transmission array.
+
+        Returns:
+            Complex array with shape ``(num_wavelengths, p1, p2, ..., pk)``.
+        """
         return self.transmission_real + 1j * self.transmission_imag
 
     def _multilinear_interpolate_parameter_grid(
@@ -145,7 +185,20 @@ class MetaAtomLibrary:
         geometry_params: jnp.ndarray,
         wavelengths_um: jnp.ndarray,
     ) -> jnp.ndarray:
-        """Interpolate complex transmission at geometry parameters and requested wavelengths."""
+        """Interpolate complex transmission at arbitrary geometry and wavelength points.
+
+        Geometry interpolation is multilinear over the library's parameter
+        grid; spectral interpolation is linear between library wavelengths.
+
+        Args:
+            geometry_params: Geometry coordinates with trailing dimension
+                equal to ``num_parameters``.  Spatial maps of shape
+                ``(ny, nx, num_parameters)`` are supported.
+            wavelengths_um: 1-D array of query wavelengths in micrometers.
+
+        Returns:
+            Complex transmission with shape ``(*spatial_dims, num_query_wavelengths)``.
+        """
         self.validate()
 
         geom = jnp.asarray(geometry_params, dtype=jnp.float32)
@@ -181,7 +234,29 @@ class MetaAtomLibrary:
 
 @dataclass(frozen=True)
 class MetaAtomInterpolationLayer(OpticalLayer):
-    """Layer that applies a geometry-parameterized meta-atom transmission model."""
+    """Optical layer applying a geometry-parameterised meta-atom transmission.
+
+    Raw (unconstrained) geometry parameters are mapped into physical
+    bounds via a sigmoid transform, then looked up in the attached
+    :class:`MetaAtomLibrary` to obtain per-pixel complex transmission.
+
+    Supports two polarisation modes:
+
+    - ``"scalar"``: a single set of geometry parameters modulates both
+      polarisation channels identically.
+    - ``"jones_diagonal"``: independent geometry parameters for the
+      ``Ex`` and ``Ey`` channels, producing a diagonal Jones
+      transmission.
+
+    Args:
+        library: Pre-built meta-atom transmission library.
+        raw_geometry_params: Unconstrained optimisation variables.
+            Shape depends on mode and whether parameters are global or
+            spatially varying.
+        min_geometry_params: 1-D lower bounds for each geometry axis.
+        max_geometry_params: 1-D upper bounds for each geometry axis.
+        polarization_mode: ``"scalar"`` or ``"jones_diagonal"``.
+    """
 
     library: MetaAtomLibrary
     raw_geometry_params: jnp.ndarray
@@ -190,6 +265,7 @@ class MetaAtomInterpolationLayer(OpticalLayer):
     polarization_mode: Literal["scalar", "jones_diagonal"] = "scalar"
 
     def _bounded_geometry_params_scalar(self, raw: jnp.ndarray) -> jnp.ndarray:
+        """Map scalar-mode raw parameters into bounded physical geometry values."""
         min_v = jnp.asarray(self.min_geometry_params, dtype=jnp.float32)
         max_v = jnp.asarray(self.max_geometry_params, dtype=jnp.float32)
         if raw.ndim == 1:
@@ -213,6 +289,7 @@ class MetaAtomInterpolationLayer(OpticalLayer):
         raise ValueError("raw_geometry_params must be 1D or parameter map")
 
     def _bounded_geometry_params_jones_diagonal(self, raw: jnp.ndarray) -> jnp.ndarray:
+        """Map Jones-diagonal raw parameters into bounded physical geometry values."""
         min_v = jnp.asarray(self.min_geometry_params, dtype=jnp.float32)
         max_v = jnp.asarray(self.max_geometry_params, dtype=jnp.float32)
         num_p = self.library.num_parameters
@@ -242,7 +319,12 @@ class MetaAtomInterpolationLayer(OpticalLayer):
         return min_map + (max_map - min_map) * jax.nn.sigmoid(raw_param)
 
     def bounded_geometry_params(self) -> jnp.ndarray:
-        """Map unconstrained parameters into physical bounds via sigmoid."""
+        """Map unconstrained raw parameters into physical bounds via sigmoid.
+
+        Returns:
+            Bounded geometry parameters in the same layout as
+            ``raw_geometry_params``.
+        """
         raw = jnp.asarray(self.raw_geometry_params, dtype=jnp.float32)
         min_v = jnp.asarray(self.min_geometry_params, dtype=jnp.float32)
         max_v = jnp.asarray(self.max_geometry_params, dtype=jnp.float32)
@@ -259,6 +341,16 @@ class MetaAtomInterpolationLayer(OpticalLayer):
         raise ValueError("polarization_mode must be one of: scalar, jones_diagonal")
 
     def forward(self, field: Field) -> Field:
+        """Apply interpolated meta-atom transmission to the input field.
+
+        Args:
+            field: Scalar field for ``polarization_mode="scalar"`` or Jones
+                field for ``polarization_mode="jones_diagonal"``.
+
+        Returns:
+            Field with the same grid, spectrum, domain, and batch axes as the
+            input, modulated by the interpolated complex transmission.
+        """
         self.validate_for(field)
         geometry = self.bounded_geometry_params()
         if self.polarization_mode == "jones_diagonal":
@@ -355,6 +447,7 @@ class MetaAtomInterpolationLayer(OpticalLayer):
         )
 
     def validate_for(self, field: Field) -> None:
+        """Validate field compatibility and library wavelength coverage."""
         super().validate_for(field)
         self.library.validate()
         if self.polarization_mode not in ("scalar", "jones_diagonal"):
@@ -375,6 +468,7 @@ class MetaAtomInterpolationLayer(OpticalLayer):
             )
 
     def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return raw and bounded geometry parameters plus optimization bounds."""
         return {
             "raw_geometry_params": jnp.asarray(self.raw_geometry_params, dtype=jnp.float32),
             "bounded_geometry_params": self.bounded_geometry_params(),

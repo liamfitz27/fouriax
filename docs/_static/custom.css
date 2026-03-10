@@ -1,0 +1,22 @@
+/* Minimal visual tuning to keep the docs shell clean and closer to a JAX-style layout. */
+
+.bd-page-width {
+  max-width: 88rem;
+}
+
+.bd-main .bd-content .bd-article-container {
+  max-width: 72rem;
+}
+
+.bd-header .navbar-brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.bd-sidebar-primary {
+  border-right: 1px solid var(--pst-color-border);
+}
+
+.bd-sidebar-secondary {
+  border-left: 1px solid var(--pst-color-border);
+}
