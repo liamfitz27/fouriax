@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 from pathlib import Path
 
@@ -11,17 +10,9 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from fouriax.optics import (
-    DetectorArray,
-    Field,
-    Grid,
-    IncoherentImager,
-    OpticalModule,
-    RSPropagator,
-    Spectrum,
-    ThinLens,
-)
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Incoherent Camera Example")
@@ -51,7 +42,7 @@ PLOT = not ARGS.no_plot
 
 
 # %% Helper Functions
-def _make_object_intensity(grid: Grid) -> jnp.ndarray:
+def _make_object_intensity(grid: fx.Grid) -> jnp.ndarray:
     x, y = grid.spatial_grid()
     r = jnp.sqrt(x * x + y * y)
     disk = (r <= 20.0).astype(jnp.float32)
@@ -70,8 +61,8 @@ def _center_crop(image: np.ndarray, size_px: int) -> np.ndarray:
 
 def main() -> None:
     # %% Setup
-    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
-    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
+    grid = fx.Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = fx.Spectrum.from_scalar(WAVELENGTH_UM)
 
     lens_na = APERTURE_DIAMETER_UM / (2.0 * FOCAL_LENGTH_UM)
     sensor_width_um = SENSOR_SIZE_PX * grid.dx_um
@@ -79,22 +70,22 @@ def main() -> None:
     fov_deg = 2.0 * hfov_deg
 
     object_intensity = _make_object_intensity(grid)
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(
+    field_in = fx.Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(
         jnp.sqrt(object_intensity)[None, :, :]
     )
 
-    lens = ThinLens(
+    lens = fx.ThinLens(
         focal_length_um=FOCAL_LENGTH_UM,
         aperture_diameter_um=APERTURE_DIAMETER_UM,
     )
-    rs = RSPropagator(
+    rs = fx.RSPropagator(
         use_sampling_planner=True,
         warn_on_regime_mismatch=False,
         medium_index=1.0,
         na_limit=lens_na,
     )
 
-    imager_psf = IncoherentImager(
+    imager_psf = fx.IncoherentImager(
         optical_layer=lens,
         propagator=rs,
         distance_um=FOCAL_LENGTH_UM,
@@ -102,7 +93,7 @@ def main() -> None:
         normalize_psf=True,
         mode="psf",
     )
-    imager_otf = IncoherentImager(
+    imager_otf = fx.IncoherentImager(
         optical_layer=lens,
         propagator=rs,
         distance_um=FOCAL_LENGTH_UM,
@@ -111,12 +102,12 @@ def main() -> None:
         mode="otf",
     )
 
-    detector_array = DetectorArray(
+    detector_array = fx.DetectorArray(
         detector_grid=grid,
         qe_curve=1.0,
     )
-    module_psf = OpticalModule(layers=(imager_psf,), sensor=detector_array)
-    module_otf = OpticalModule(layers=(imager_otf,), sensor=detector_array)
+    module_psf = fx.OpticalModule(layers=(imager_psf,), sensor=detector_array)
+    module_otf = fx.OpticalModule(layers=(imager_otf,), sensor=detector_array)
 
     # %% Evaluation
     image_psf = np.asarray(module_psf.measure(field_in))
@@ -159,7 +150,7 @@ def main() -> None:
         for a in ax:
             a.set_xticks([])
             a.set_yticks([])
-        fig.suptitle("Incoherent Camera Imaging (IncoherentImager)", fontsize=14, y=0.99)
+        fig.suptitle("Incoherent Camera Imaging (fx.IncoherentImager)", fontsize=14, y=0.99)
         fig.savefig(PLOT_PATH, dpi=150)
         plt.close(fig)
         print(f"saved: {PLOT_PATH}")

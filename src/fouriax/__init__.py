@@ -1,6 +1,6 @@
 """fouriax package."""
 
-from fouriax import analysis, optim
+from fouriax import analysis, optim, utils
 from fouriax.fft import fftconvolve
 from fouriax.optics import (
     AmplitudeMask,
@@ -52,6 +52,7 @@ from fouriax.optics import (
 __all__ = [
     "analysis",
     "optim",
+    "utils",
     "fftconvolve",
     "Grid",
     "Spectrum",

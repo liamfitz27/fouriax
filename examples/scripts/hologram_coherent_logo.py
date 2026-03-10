@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 from pathlib import Path
 
@@ -14,16 +13,9 @@ import numpy as np
 import optax
 from PIL import Image
 
-from fouriax.optics import (
-    Field,
-    Grid,
-    OpticalModule,
-    PhaseMask,
-    Spectrum,
-    plan_propagation,
-)
-from fouriax.optim import optimize_optical_module
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Coherent Hologram Logo Example")
@@ -65,7 +57,7 @@ PLOT = not ARGS.no_plot
 
 
 # %% Helper Functions
-def load_logo_target(path: Path, grid: Grid) -> jnp.ndarray:
+def load_logo_target(path: Path, grid: fx.Grid) -> jnp.ndarray:
     """Load image and convert to binary target: white->0, red-logo->1."""
     img = Image.open(path).convert("RGB").resize((grid.nx, grid.ny), Image.Resampling.BILINEAR)
     rgb = np.asarray(img, dtype=np.float32) / 255.0
@@ -81,12 +73,12 @@ def load_logo_target(path: Path, grid: Grid) -> jnp.ndarray:
 
 def main() -> None:
     # %% Setup
-    grid = Grid.from_extent(nx=NX, ny=NY, dx_um=DX_UM, dy_um=DY_UM)
-    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
+    grid = fx.Grid.from_extent(nx=NX, ny=NY, dx_um=DX_UM, dy_um=DY_UM)
+    spectrum = fx.Spectrum.from_scalar(WAVELENGTH_UM)
     target = load_logo_target(IMAGE_PATH, grid=grid)
 
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
-    propagator = plan_propagation(
+    field_in = fx.Field.plane_wave(grid=grid, spectrum=spectrum)
+    propagator = fx.plan_propagation(
         mode="auto",
         grid=grid,
         spectrum=spectrum,
@@ -95,11 +87,11 @@ def main() -> None:
         min_padding_factor=MIN_PADDING_FACTOR,
     )
 
-    def build_module(raw_phase: jnp.ndarray) -> OpticalModule:
+    def build_module(raw_phase: jnp.ndarray) -> fx.OpticalModule:
         phase = 2.0 * jnp.pi * jax.nn.sigmoid(raw_phase)
-        return OpticalModule(
+        return fx.OpticalModule(
             layers=(
-                PhaseMask(phase_map_rad=phase[None, :, :]),
+                fx.PhaseMask(phase_map_rad=phase[None, :, :]),
                 propagator,
             )
         )
@@ -114,7 +106,7 @@ def main() -> None:
     key = jax.random.PRNGKey(SEED)
     raw_phase = 0.1 * jax.random.normal(key, (grid.ny, grid.nx), dtype=jnp.float32)
     optimizer = optax.adam(LR)
-    result = optimize_optical_module(
+    result = fx.optim.optimize_optical_module(
         init_params=raw_phase,
         build_module=build_module,
         loss_fn=loss_fn,

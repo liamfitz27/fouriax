@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 from pathlib import Path
 
@@ -13,18 +12,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from fouriax.optics import (
-    Field,
-    Grid,
-    MetaAtomInterpolationLayer,
-    MetaAtomLibrary,
-    OpticalModule,
-    PhaseMask,
-    Spectrum,
-    plan_propagation,
-)
-from fouriax.optim import optimize_optical_module
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Meta-Atom Optimization Example")
@@ -65,7 +55,7 @@ PLOT = not ARGS.no_plot
 
 
 # %% Helper Functions
-def load_square_pillar_library(npz_path: Path) -> MetaAtomLibrary:
+def load_square_pillar_library(npz_path: Path) -> fx.MetaAtomLibrary:
     """Load LUT from NPZ keys: freqs [Hz], side_lengths [m], trans, phase."""
     with np.load(npz_path) as data:
         freqs_hz = np.asarray(data["freqs"], dtype=np.float64).reshape(-1)
@@ -87,7 +77,7 @@ def load_square_pillar_library(npz_path: Path) -> MetaAtomLibrary:
 
     transmission_complex = trans.T * np.exp(1j * phase.T)
 
-    return MetaAtomLibrary.from_complex(
+    return fx.MetaAtomLibrary.from_complex(
         wavelengths_um=jnp.asarray(wavelengths_um, dtype=jnp.float32),
         parameter_axes=(jnp.asarray(side_lengths_um, dtype=jnp.float32),),
         transmission_complex=jnp.asarray(transmission_complex),
@@ -100,12 +90,12 @@ def main() -> None:
 
     nearest_idx = int(jnp.argmin(jnp.abs(library.wavelengths_um - SELECTED_WAVELENGTH_UM)))
     wavelength_um = float(library.wavelengths_um[nearest_idx])
-    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
-    spectrum = Spectrum.from_scalar(wavelength_um)
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum)
+    grid = fx.Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = fx.Spectrum.from_scalar(wavelength_um)
+    field_in = fx.Field.plane_wave(grid=grid, spectrum=spectrum)
 
     target_xy = (grid.nx // 2, grid.ny // 2)
-    propagator = plan_propagation(
+    propagator = fx.plan_propagation(
         mode="auto",
         grid=grid,
         spectrum=spectrum,
@@ -116,10 +106,10 @@ def main() -> None:
     min_bounds = jnp.array([side_axis[0]], dtype=jnp.float32)
     max_bounds = jnp.array([side_axis[-1]], dtype=jnp.float32)
 
-    def build_module(raw_params: jnp.ndarray) -> OpticalModule:
-        return OpticalModule(
+    def build_module(raw_params: jnp.ndarray) -> fx.OpticalModule:
+        return fx.OpticalModule(
             layers=(
-                MetaAtomInterpolationLayer(
+                fx.MetaAtomInterpolationLayer(
                     library=library,
                     raw_geometry_params=raw_params,
                     min_geometry_params=min_bounds,
@@ -140,7 +130,7 @@ def main() -> None:
     raw_params = 0.1 * jax.random.normal(key, (grid.ny, grid.nx), dtype=jnp.float32)
     optimizer = optax.adam(learning_rate=LR)
 
-    result = optimize_optical_module(
+    result = fx.optim.optimize_optical_module(
         init_params=raw_params,
         build_module=build_module,
         loss_fn=loss_fn,
@@ -157,9 +147,9 @@ def main() -> None:
     x_um, y_um = grid.spatial_grid()
     k = 2.0 * jnp.pi / wavelength_um
     hyperbolic_phase = -k * (jnp.sqrt(x_um * x_um + y_um * y_um + DISTANCE_UM**2) - DISTANCE_UM)
-    reference_module = OpticalModule(
+    reference_module = fx.OpticalModule(
         layers=(
-            PhaseMask(phase_map_rad=hyperbolic_phase[None, :, :]),
+            fx.PhaseMask(phase_map_rad=hyperbolic_phase[None, :, :]),
             propagator,
         )
     )
@@ -167,7 +157,7 @@ def main() -> None:
     reference_intensity = np.asarray(reference_module.forward(field_in).intensity())
     reference_profile = reference_intensity[0, target_xy[1], :]
 
-    final_layer = MetaAtomInterpolationLayer(
+    final_layer = fx.MetaAtomInterpolationLayer(
         library=library,
         raw_geometry_params=result.best_params,
         min_geometry_params=min_bounds,

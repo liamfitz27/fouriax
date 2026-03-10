@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 import json
 from pathlib import Path
@@ -18,22 +17,9 @@ from flax import linen as nn
 from scipy.io import loadmat
 from sklearn.decomposition import PCA
 
-from fouriax.analysis import d_optimality, fisher_information
-from fouriax.optics import (
-    AmplitudeMask,
-    DetectorArray,
-    Field,
-    Grid,
-    OpticalModule,
-    PoissonNoise,
-    Spectrum,
-)
-from fouriax.optim import (
-    optimize_dataset_hybrid_module,
-    optimize_dataset_optical_module,
-    train_val_split,
-)
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Spectral Filter Optimization Example")
@@ -163,7 +149,7 @@ def main() -> None:
     )
     spectra_full = spectra_full[np.sum(spectra_full, axis=1) > 0.0]
     split_rng = np.random.default_rng(SEED)
-    (train_full,), (val_full,) = train_val_split(
+    (train_full,), (val_full,) = fx.optim.train_val_split(
         spectra_full,
         val_fraction=VAL_FRACTION,
         rng=split_rng,
@@ -174,9 +160,9 @@ def main() -> None:
     n_wavelengths = int(train.shape[1])
     num_filters = int(ARRAY_SIZE**2)
     array_size = int(round(np.sqrt(num_filters)))
-    grid = Grid.from_extent(nx=array_size, ny=array_size, dx_um=1.0, dy_um=1.0)
-    spectrum = Spectrum.from_array(jnp.asarray(wavelengths_nm * 1e-3, dtype=jnp.float32))
-    noise_model = PoissonNoise(count_scale=PHOTON_SCALE)
+    grid = fx.Grid.from_extent(nx=array_size, ny=array_size, dx_um=1.0, dy_um=1.0)
+    spectrum = fx.Spectrum.from_array(jnp.asarray(wavelengths_nm * 1e-3, dtype=jnp.float32))
+    noise_model = fx.PoissonNoise(count_scale=PHOTON_SCALE)
 
     pca_components = min(PCA_COMPONENTS, n_wavelengths, train.shape[0])
     pca, basis_np = build_pca_basis(train, pca_components, SEED)
@@ -199,19 +185,19 @@ def main() -> None:
         dtype=jnp.float32,
     )
 
-    def build_filter_module(raw_filter_params: jnp.ndarray) -> OpticalModule:
+    def build_filter_module(raw_filter_params: jnp.ndarray) -> fx.OpticalModule:
         a = filter_intensity_matrix(raw_filter_params)
         amp_map = jnp.sqrt(jnp.clip(a.T, 0.0, 1.0)).reshape((spectrum.size, array_size, array_size))
-        return OpticalModule(
+        return fx.OpticalModule(
             layers=(),
-            sensor=DetectorArray(
+            sensor=fx.DetectorArray(
                 detector_grid=grid,
-                filter_mask=AmplitudeMask(amplitude_map=amp_map),
+                filter_mask=fx.AmplitudeMask(amplitude_map=amp_map),
                 noise_model=noise_model,
             ),
         )
 
-    def build_sample_field(sample_spectra: np.ndarray | jnp.ndarray) -> Field:
+    def build_sample_field(sample_spectra: np.ndarray | jnp.ndarray) -> fx.Field:
         sample_spectra = jnp.asarray(sample_spectra, dtype=jnp.float32)
         if sample_spectra.ndim == 1:
             sample_spectra = sample_spectra[None, :]
@@ -225,7 +211,7 @@ def main() -> None:
             )
             * sample_amp
         )
-        return Field(data=field_data, grid=grid, spectrum=spectrum, domain="spatial")
+        return fx.Field(data=field_data, grid=grid, spectrum=spectrum, domain="spatial")
 
     def measure_batch(
         raw_filter: jnp.ndarray,
@@ -236,8 +222,8 @@ def main() -> None:
         module = build_filter_module(raw_filter)
         field = build_sample_field(batch_spectra)
         sensor = module.sensor
-        if not isinstance(sensor, DetectorArray):
-            raise ValueError("filter module must use DetectorArray for batched measurement")
+        if not isinstance(sensor, fx.DetectorArray):
+            raise ValueError("filter module must use fx.DetectorArray for batched measurement")
 
         image_clean = sensor.expected(field).astype(jnp.float32)
         if noise_keys is None:
@@ -268,8 +254,8 @@ def main() -> None:
         batch_coeffs = batch_spectra @ basis
         d_opt = jnp.mean(
             jax.vmap(
-                lambda coeffs: d_optimality(
-                    fisher_information(
+                lambda coeffs: fx.analysis.d_optimality(
+                    fx.analysis.fisher_information(
                         lambda c: ab @ c,
                         coeffs,
                         noise_model=noise_model,
@@ -283,7 +269,7 @@ def main() -> None:
         )
         return -d_opt + regularization
 
-    proxy_result = optimize_dataset_optical_module(
+    proxy_result = fx.optim.optimize_dataset_optical_module(
         init_params=raw_filter,
         build_module=build_filter_module,
         batch_loss_fn=batch_proxy_loss,
@@ -338,7 +324,7 @@ def main() -> None:
         )
         return recon_mse + regularization
 
-    recon_result = optimize_dataset_hybrid_module(
+    recon_result = fx.optim.optimize_dataset_hybrid_module(
         init_optical_params=raw_filter,
         init_decoder_params=recon_params,
         build_module=build_filter_module,

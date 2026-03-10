@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 import urllib.request
 from pathlib import Path
@@ -16,18 +15,9 @@ import numpy as np
 import optax
 from matplotlib.patches import Rectangle
 
-from fouriax.optics import (
-    DetectorArray,
-    Field,
-    Grid,
-    IntensityMonitor,
-    OpticalModule,
-    PhaseMask,
-    Spectrum,
-    plan_propagation,
-)
-from fouriax.optim import optimize_dataset_optical_module
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ONN MNIST Example")
@@ -86,7 +76,7 @@ def load_mnist(cache_path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np
     return x_train, y_train, x_test, y_test
 
 
-def resize_images_to_grid(images: np.ndarray, grid: Grid) -> np.ndarray:
+def resize_images_to_grid(images: np.ndarray, grid: fx.Grid) -> np.ndarray:
     arr = jnp.asarray(images, dtype=jnp.float32)[..., None]
     resized = jax.image.resize(
         arr,
@@ -106,9 +96,9 @@ def main() -> None:
         f"{selected_device.platform} kind={getattr(selected_device, 'device_kind', 'unknown')}"
     )
 
-    input_grid = Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
-    spectrum = Spectrum.from_scalar(1.55)
-    propagator = plan_propagation(
+    input_grid = fx.Grid.from_extent(nx=28, ny=28, dx_um=1.0, dy_um=1.0)
+    spectrum = fx.Spectrum.from_scalar(1.55)
+    propagator = fx.plan_propagation(
         mode="auto",
         grid=input_grid,
         spectrum=spectrum,
@@ -119,24 +109,24 @@ def main() -> None:
     work_grid = propagator.precomputed_grid or input_grid
     mask_nx = work_grid.nx // PHASE_MASK_DOWNSAMPLE
     mask_ny = work_grid.ny // PHASE_MASK_DOWNSAMPLE
-    mask_grid = Grid.from_extent(
+    mask_grid = fx.Grid.from_extent(
         nx=mask_nx,
         ny=mask_ny,
         dx_um=(work_grid.nx * work_grid.dx_um) / mask_nx,
         dy_um=(work_grid.ny * work_grid.dy_um) / mask_ny,
     )
-    detector_grid = Grid.from_extent(
+    detector_grid = fx.Grid.from_extent(
         nx=5,
         ny=2,
         dx_um=(work_grid.nx * work_grid.dx_um) / 5.0,
         dy_um=(work_grid.ny * work_grid.dy_um) / 2.0,
     )
-    detector_array = DetectorArray(
+    detector_array = fx.DetectorArray(
         detector_grid=detector_grid,
     )
 
-    def build_module(raw_params: jnp.ndarray) -> OpticalModule:
-        layers = [IntensityMonitor(sum_wavelengths=True, output_domain="spatial")]
+    def build_module(raw_params: jnp.ndarray) -> fx.OpticalModule:
+        layers = [fx.IntensityMonitor(sum_wavelengths=True, output_domain="spatial")]
         for i in range(raw_params.shape[0]):
             upsampled_latent = jax.image.resize(
                 raw_params[i],
@@ -144,10 +134,10 @@ def main() -> None:
                 method="linear",
             )
             bounded_phase = 2.0 * jnp.pi * jax.nn.sigmoid(upsampled_latent)
-            layers.append(PhaseMask(phase_map_rad=bounded_phase))
+            layers.append(fx.PhaseMask(phase_map_rad=bounded_phase))
             layers.append(propagator)
-            layers.append(IntensityMonitor(sum_wavelengths=True, output_domain="spatial"))
-        return OpticalModule(layers=tuple(layers), sensor=detector_array)
+            layers.append(fx.IntensityMonitor(sum_wavelengths=True, output_domain="spatial"))
+        return fx.OpticalModule(layers=tuple(layers), sensor=detector_array)
 
     x_train, y_train, x_test, y_test = load_mnist(MNIST_CACHE_PATH)
     x_train = x_train[:TRAIN_SAMPLES]
@@ -167,7 +157,7 @@ def main() -> None:
     # %% Loss Function and Optimization
     def logits_batch(raw_params: jnp.ndarray, images_3d: jnp.ndarray) -> jnp.ndarray:
         module = build_module(raw_params)
-        field = Field(
+        field = fx.Field(
             data=images_3d[:, None, :, :].astype(jnp.complex64),
             grid=work_grid,
             spectrum=spectrum,
@@ -194,7 +184,7 @@ def main() -> None:
     train_data = (x_train, y_train)
     val_data = (x_test, y_test)
 
-    result = optimize_dataset_optical_module(
+    result = fx.optim.optimize_dataset_optical_module(
         init_params=phase_params,
         build_module=build_module,
         batch_loss_fn=batch_loss_fn,
@@ -222,7 +212,7 @@ def main() -> None:
     module = result.best_module
     sample_idx = 0
     test_image = jnp.asarray(x_test[sample_idx], dtype=jnp.float32)
-    sample_field = Field(
+    sample_field = fx.Field(
         data=test_image[None, :, :].astype(jnp.complex64),
         grid=work_grid,
         spectrum=spectrum,
@@ -234,7 +224,7 @@ def main() -> None:
         phase_masks = [
             np.asarray(stage.phase_map_rad)
             for stage in module.layers
-            if isinstance(stage, PhaseMask)
+            if isinstance(stage, fx.PhaseMask)
         ]
         titles = ["Input"] + [f"After Propagation {i + 1}" for i in range(len(intensity_steps) - 1)]
         n_cols = max(len(intensity_steps), len(phase_masks))

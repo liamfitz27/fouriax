@@ -3,7 +3,6 @@
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 from pathlib import Path
 
@@ -11,22 +10,9 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from fouriax.analysis import (
-    cramer_rao_bound,
-    d_optimality,
-    fisher_information,
-    sensitivity_map,
-)
-from fouriax.optics import (
-    Field,
-    Grid,
-    OpticalModule,
-    PhaseMask,
-    PoissonNoise,
-    Spectrum,
-    plan_propagation,
-)
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Sensitivity Analysis Example")
@@ -73,7 +59,7 @@ PLOT = not ARGS.no_plot
 
 # %% Helper Functions
 def stretched_hyperbolic_phase(
-    grid: Grid,
+    grid: fx.Grid,
     distance_um: float,
     wavelength_um: float,
     stretch_factor: float = 2.0,
@@ -104,9 +90,9 @@ def pooled_metric(image: jnp.ndarray, pool: int) -> jnp.ndarray:
 def main() -> None:
     if SENSITIVITY_POOL <= 0:
         raise ValueError("sensitivity_pool must be strictly positive")
-    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
-    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
-    propagator = plan_propagation(
+    grid = fx.Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = fx.Spectrum.from_scalar(WAVELENGTH_UM)
+    propagator = fx.plan_propagation(
         mode="auto",
         grid=grid,
         spectrum=spectrum,
@@ -116,16 +102,16 @@ def main() -> None:
     # Use a hyperbolic lens phase as the "optimized" design
     phase = stretched_hyperbolic_phase(grid, DISTANCE_UM, WAVELENGTH_UM, STRETCH_FACTOR)
 
-    def make_module(phase_map: jnp.ndarray) -> OpticalModule:
-        return OpticalModule(
+    def make_module(phase_map: jnp.ndarray) -> fx.OpticalModule:
+        return fx.OpticalModule(
             layers=(
-                PhaseMask(phase_map_rad=phase_map[None, :, :]),
+                fx.PhaseMask(phase_map_rad=phase_map[None, :, :]),
                 propagator,
             )
         )
 
     input_amp = jnp.sqrt(jnp.asarray(INPUT_COUNT_SCALE, dtype=jnp.float32))
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum, amplitude=input_amp)
+    field_in = fx.Field.plane_wave(grid=grid, spectrum=spectrum, amplitude=input_amp)
 
     def forward_intensity(phase_map: jnp.ndarray) -> jnp.ndarray:
         return make_module(phase_map).forward(field_in).intensity()[0]
@@ -139,7 +125,7 @@ def main() -> None:
         theta_x, theta_y = angles[0], angles[1]
         tilt_phase = k * (theta_x * x_grid + theta_y * y_grid)
         field_data = (input_amp * jnp.exp(1j * tilt_phase)).astype(jnp.complex64)
-        field_tilted = Field(
+        field_tilted = fx.Field(
             data=field_data[None, :, :],
             grid=grid,
             spectrum=spectrum,
@@ -153,13 +139,13 @@ def main() -> None:
         [jnp.cos(angle_dir), jnp.sin(angle_dir)],
     )
     print("Computing observation FIM (angle of incidence)...")
-    fim_angle = fisher_information(
+    fim_angle = fx.analysis.fisher_information(
         forward_angle,
         angles_nominal,
-        noise_model=PoissonNoise(count_scale=1.0),
+        noise_model=fx.PoissonNoise(count_scale=1.0),
     )
-    crb_angle = cramer_rao_bound(fim_angle, regularize=1e-15)
-    d_opt = d_optimality(fim_angle)
+    crb_angle = fx.analysis.cramer_rao_bound(fim_angle, regularize=1e-15)
+    d_opt = fx.analysis.d_optimality(fim_angle)
 
     fim_np = np.asarray(fim_angle)
     crb_np = np.asarray(crb_angle)
@@ -176,7 +162,7 @@ def main() -> None:
     def metric_fn(output: jnp.ndarray) -> jnp.ndarray:
         return pooled_metric(output, SENSITIVITY_POOL)
 
-    sens = sensitivity_map(forward_intensity, phase, metric_fn=metric_fn)
+    sens = fx.analysis.sensitivity_map(forward_intensity, phase, metric_fn=metric_fn)
     sens_np = np.asarray(sens)
 
     print("Computing fabrication tolerance map...")

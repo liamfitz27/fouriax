@@ -8,7 +8,6 @@ output to a direct FFT cross-correlation as ground truth.
 # %% Imports
 from __future__ import annotations
 
-# %% Paths and Parameters
 import argparse
 from pathlib import Path
 
@@ -16,17 +15,9 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from fouriax.optics import (
-    ComplexMask,
-    DetectorArray,
-    Field,
-    Grid,
-    OpticalModule,
-    Spectrum,
-    ThinLens,
-    plan_propagation,
-)
+import fouriax as fx
 
+# %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="4f Correlator Example")
@@ -51,7 +42,7 @@ GRID_DX_UM = ARGS.grid_dx_um
 PLOT = not ARGS.no_plot
 
 
-# %% Helper Functions
+# %% Concept and Helper Functions
 def _raw_correlate(scene: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
     """Ground-truth cross-correlation intensity via direct FFT."""
     f_scene = jnp.fft.fftn(jnp.fft.ifftshift(scene), axes=(-2, -1))
@@ -60,7 +51,7 @@ def _raw_correlate(scene: jnp.ndarray, target: jnp.ndarray) -> jnp.ndarray:
     return jnp.abs(jnp.fft.fftshift(corr)) ** 2
 
 
-def _sampling_matched_focal_length(grid: Grid) -> float:
+def _sampling_matched_focal_length(grid: fx.Grid) -> float:
     """f = n·N·dx² / λ"""
     return N_MEDIUM * grid.nx * grid.dx_um**2 / WAVELENGTH_UM
 
@@ -85,7 +76,7 @@ def _paraxial_validity_constraint_fom() -> float:
     return (WAVELENGTH_UM / (2 * N_MEDIUM * GRID_DX_UM)) ** 2
 
 
-def _make_rect(grid: Grid, cx_f: float, cy_f: float, w_f: float, h_f: float) -> jnp.ndarray:
+def _make_rect(grid: fx.Grid, cx_f: float, cy_f: float, w_f: float, h_f: float) -> jnp.ndarray:
     """Binary rectangle; positions/sizes are fractions of grid half-extent."""
     half = grid.nx * grid.dx_um / 2.0
     x, y = grid.spatial_grid()
@@ -94,7 +85,7 @@ def _make_rect(grid: Grid, cx_f: float, cy_f: float, w_f: float, h_f: float) -> 
     ).astype(jnp.float32)
 
 
-def _build_scene(grid: Grid) -> jnp.ndarray:
+def _build_scene(grid: fx.Grid) -> jnp.ndarray:
     """Three copies of the target square plus a distractor rectangle."""
     hw = 0.10
     scene = jnp.zeros(grid.shape, dtype=jnp.float32)
@@ -104,43 +95,43 @@ def _build_scene(grid: Grid) -> jnp.ndarray:
     return jnp.clip(scene, 0.0, 1.0)
 
 
-def _build_target(grid: Grid) -> jnp.ndarray:
+def _build_target(grid: fx.Grid) -> jnp.ndarray:
     """Centred target square (same size as copies in the scene)."""
     return _make_rect(grid, 0.0, 0.0, 0.10, 0.10)
 
 
 def main() -> None:
     # %% Setup
-    grid = Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
-    spectrum = Spectrum.from_scalar(WAVELENGTH_UM)
+    grid = fx.Grid.from_extent(nx=GRID_N, ny=GRID_N, dx_um=GRID_DX_UM, dy_um=GRID_DX_UM)
+    spectrum = fx.Spectrum.from_scalar(WAVELENGTH_UM)
     f_um = _sampling_matched_focal_length(grid)
     print(f"f = {f_um:.1f} µm  |  (r_max/f)² = {_paraxial_validity_constraint_fom():.4f}")
 
     scene = _build_scene(grid)
     target = _build_target(grid)
-    field_in = Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(scene[None, :, :])
+    field_in = fx.Field.plane_wave(grid=grid, spectrum=spectrum).apply_amplitude(scene[None, :, :])
 
     amp, phase = _matched_filter(target)
 
-    prop = plan_propagation(
+    prop = fx.plan_propagation(
         mode="auto",
         grid=grid,
         spectrum=spectrum,
         distance_um=f_um,
     )
-    lens = ThinLens(focal_length_um=f_um)
+    lens = fx.ThinLens(focal_length_um=f_um)
 
-    correlator = OpticalModule(
+    correlator = fx.OpticalModule(
         layers=(
             prop,
             lens,
             prop,
-            ComplexMask(amplitude_map=amp, phase_map_rad=phase),
+            fx.ComplexMask(amplitude_map=amp, phase_map_rad=phase),
             prop,
             lens,
             prop,
         ),
-        sensor=DetectorArray(detector_grid=grid),
+        sensor=fx.DetectorArray(detector_grid=grid),
     )
 
     # %% Evaluation
