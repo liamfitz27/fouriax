@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 import jax
 import jax.numpy as jnp
 
-from fouriax.optics.model import Field
+from fouriax.optics.model import Field, Intensity
 
 
 class OpticalLayer(ABC):
@@ -56,17 +56,22 @@ class OpticalLayer(ABC):
 class Sensor(ABC):
     """Base interface for converting optical fields into detector measurements.
 
-    Subclasses implement :meth:`measure`, which maps a ``Field`` to a
-    real-valued measurement array.  An optional *key* argument supports
-    stochastic sensor noise models.
+    Subclasses implement :meth:`measure`, which maps a ``Field`` or
+    ``Intensity`` to a real-valued measurement array.  An optional *key*
+    argument supports stochastic sensor noise models.
     """
 
     @abstractmethod
-    def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
+    def measure(
+        self,
+        field: Field | Intensity,
+        *,
+        key: jax.Array | None = None,
+    ) -> jnp.ndarray:
         """Produce a measurement from *field*.
 
         Args:
-            field: Input optical field.
+            field: Input optical field or spatial intensity.
             key: Optional JAX PRNG key for stochastic noise sampling.
 
         Returns:
@@ -74,9 +79,25 @@ class Sensor(ABC):
             the exact shape and reduction over wavelength or polarization axes.
         """
 
-    def validate_for(self, field: Field) -> None:
+    def validate_for(self, field: Field | Intensity) -> None:
         """Check that ``field`` is compatible with this sensor."""
         field.validate()
+
+
+class IncoherentLayer(ABC):
+    """Base interface for incoherent intensity-to-intensity transforms."""
+
+    @abstractmethod
+    def forward(self, intensity: Intensity) -> Intensity:
+        """Apply this layer's transformation to ``intensity``."""
+
+    def validate_for(self, intensity: Intensity) -> None:
+        """Check that ``intensity`` is compatible with this layer."""
+        intensity.validate()
+
+    def parameters(self) -> dict[str, jnp.ndarray]:
+        """Return trainable or configurable layer parameters."""
+        return {}
 
 
 class Monitor(ABC):

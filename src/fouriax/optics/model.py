@@ -165,6 +165,74 @@ class Spectrum:
 
 
 @dataclass(frozen=True)
+class Intensity:
+    """Real-valued spatial intensity over a 2D grid for one or more wavelengths.
+
+    The expected data layout is ``(*batch, num_wavelengths, ny, nx)``.
+
+    Args:
+        data: Real-valued intensity samples.
+        grid: Spatial sampling grid.
+        spectrum: Wavelength set.
+    """
+
+    data: jnp.ndarray
+    grid: Grid
+    spectrum: Spectrum
+
+    @classmethod
+    def zeros(
+        cls,
+        grid: Grid,
+        spectrum: Spectrum,
+        dtype=jnp.float32,
+    ) -> "Intensity":
+        """Create an intensity image initialised to zero."""
+        intensity = cls(
+            data=jnp.zeros((spectrum.size, grid.ny, grid.nx), dtype=dtype),
+            grid=grid,
+            spectrum=spectrum,
+        )
+        intensity.validate()
+        return intensity
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        """Leading batch dimensions before wavelength and spatial axes."""
+        return self.data.shape[:-3]
+
+    @property
+    def has_batch(self) -> bool:
+        """Whether the intensity includes one or more leading batch axes."""
+        return bool(self.batch_shape)
+
+    def power(self) -> jnp.ndarray:
+        """Integrated power per wavelength (spatial sum of intensity)."""
+        return jnp.sum(self.data, axis=(-2, -1))
+
+    def sum_wavelengths(self) -> jnp.ndarray:
+        """Sum the wavelength axis while preserving batch and spatial axes."""
+        return jnp.sum(self.data, axis=-3)
+
+    def validate(self) -> None:
+        """Validate intensity metadata and the trailing shape convention."""
+        self.grid.validate()
+        self.spectrum.validate()
+        if self.data.ndim < 3:
+            raise ValueError(
+                "intensity data must have shape (*batch, num_wavelengths, ny, nx)"
+            )
+        expected_shape = (self.spectrum.size, self.grid.ny, self.grid.nx)
+        if self.data.shape[-3:] != expected_shape:
+            raise ValueError(
+                "intensity data shape mismatch: got "
+                f"{self.data.shape}, expected trailing shape {expected_shape}"
+            )
+        if jnp.issubdtype(self.data.dtype, jnp.complexfloating):
+            raise ValueError("intensity data must be real-valued")
+
+
+@dataclass(frozen=True)
 class Field:
     """Complex optical field over a 2D grid for one or more wavelengths.
 
@@ -344,6 +412,22 @@ class Field:
             Array with shape ``(*batch, num_wavelengths, ny, nx)``.
         """
         return jnp.sum(self.component_intensity(), axis=-3)
+
+    def to_intensity(self) -> Intensity:
+        """Return the spatial irradiance represented by this field.
+
+        K-space fields are converted to spatial domain before intensity is
+        computed, so the returned object is always suitable for detector and
+        incoherent-imaging paths.
+        """
+        field_spatial = self.to_spatial()
+        intensity = Intensity(
+            data=field_spatial.intensity().astype(field_spatial.data.real.dtype),
+            grid=field_spatial.grid,
+            spectrum=field_spatial.spectrum,
+        )
+        intensity.validate()
+        return intensity
 
     def phase(self) -> jnp.ndarray:
         """Element-wise phase angle in radians.

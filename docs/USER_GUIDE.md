@@ -12,6 +12,7 @@ An optical stack in `fouriax` consists of:
 - a `Grid`, which defines the sampled spatial coordinates
 - a `Spectrum`, which defines the wavelength channels
 - a `Field`, which stores the complex optical wave on that grid
+- an `Intensity`, for incoherent image-plane data and detector inputs
 - one or more `OpticalLayer`s, composed into an `OpticalModule`
 - optional readout through a `Detector` or `DetectorArray`
 
@@ -47,6 +48,31 @@ detector = fx.Detector()
 # 5. Forward pass to get intensity
 field_out = module.forward(field)
 intensity = detector.measure(field_out)
+```
+
+For incoherent imaging, convert the coherent field boundary explicitly:
+
+```python
+object_intensity = field.to_intensity()
+imager = fx.IncoherentImager.for_finite_distance(
+    optical_layer=lens,
+    propagator=propagator,
+    object_distance_um=2.0 * lens.focal_length_um,
+    image_distance_um=2.0 * lens.focal_length_um,
+)
+sensor_grid = fx.Grid.from_extent(nx=64, ny=64, dx_um=1.0, dy_um=1.0)
+input_grid = imager.infer_from_paraxial_limit(
+    sensor_grid,
+    paraxial_max_angle_rad=0.1,
+)
+object_intensity = fx.Intensity(
+    data=object_intensity.data,
+    grid=input_grid,
+    spectrum=object_intensity.spectrum,
+)
+image_intensity = imager.forward(object_intensity)
+detector = fx.DetectorArray(detector_grid=sensor_grid)
+measurement = detector.measure(image_intensity)
 ```
 
 Why `plan_propagation(...)` is recommended:

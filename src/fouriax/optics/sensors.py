@@ -8,8 +8,7 @@ import jax.numpy as jnp
 
 from fouriax.optics.interfaces import Sensor
 from fouriax.optics.layers import AmplitudeMask
-from fouriax.optics.model import Field, Grid
-from fouriax.optics.monitors import IntensityMonitor
+from fouriax.optics.model import Field, Grid, Intensity
 from fouriax.optics.noise import SensorNoiseModel
 
 
@@ -22,6 +21,25 @@ def _apply_optional_noise(
     if noise_model is None or key is None:
         return measured
     return noise_model.sample(measured, key=key)
+
+
+def _pixel_edges(grid: Grid, *, axis: Literal["x", "y"]) -> jnp.ndarray:
+    n = grid.nx if axis == "x" else grid.ny
+    d = grid.dx_um if axis == "x" else grid.dy_um
+    return (jnp.arange(n + 1, dtype=jnp.float32) - (n / 2.0)) * d
+
+
+def _overlap_fraction_matrix(src_edges: jnp.ndarray, dst_edges: jnp.ndarray) -> jnp.ndarray:
+    src_left = src_edges[:-1][None, :]
+    src_right = src_edges[1:][None, :]
+    dst_left = dst_edges[:-1][:, None]
+    dst_right = dst_edges[1:][:, None]
+    overlap = jnp.maximum(
+        0.0,
+        jnp.minimum(dst_right, src_right) - jnp.maximum(dst_left, src_left),
+    )
+    src_width = jnp.maximum(src_right - src_left, 1e-12)
+    return overlap / src_width
 
 
 @dataclass(frozen=True)
@@ -51,33 +69,42 @@ class Detector(Sensor):
     channel_resolved: bool = False
     noise_model: SensorNoiseModel | None = None
 
-    def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
+    def measure(self, field: Field | Intensity, *, key: jax.Array | None = None) -> jnp.ndarray:
         """Return the detector output, optionally with sampled noise."""
         measured = self.expected(field)
         return _apply_optional_noise(measured, noise_model=self.noise_model, key=key)
 
-    def expected(self, field: Field) -> jnp.ndarray:
+    def expected(self, field: Field | Intensity) -> jnp.ndarray:
         """Return the deterministic detector signal before noise sampling.
 
         Args:
-            field: Input field. K-space input is converted to spatial domain.
+            field: Input field or intensity. Field input is converted to spatial
+                intensity before integration.
 
         Returns:
             Array with shape ``(*batch,)``, ``(*batch, num_wavelengths)``,
             ``(*batch, 2)``, or ``(*batch, num_wavelengths, 2)`` depending on
             ``sum_wavelengths`` and ``channel_resolved``.
         """
-        field_spatial = field.to_spatial()
-        mask = self._resolved_region_mask(field_spatial)
-        measured = IntensityMonitor(
-            sum_wavelengths=self.sum_wavelengths,
-            detector_masks=mask[None, :, :],
-            channel_resolved=self.channel_resolved,
-            output_domain=None,
-        ).read(field_spatial)
-        return jnp.squeeze(measured, axis=-1)
+        self.validate_for(field)
+        mask = self._resolved_region_mask(field.grid)
+        if isinstance(field, Field):
+            field_spatial = field.to_spatial()
+            if self.channel_resolved and field_spatial.is_jones:
+                measured = jnp.einsum(
+                    "...wcxy,xy->...wc",
+                    field_spatial.component_intensity(),
+                    mask,
+                )
+                return jnp.sum(measured, axis=-2) if self.sum_wavelengths else measured
+            intensity = field_spatial.to_intensity()
+        else:
+            intensity = field
 
-    def sample(self, field: Field, *, key: jax.Array) -> jnp.ndarray:
+        measured = jnp.einsum("...wxy,xy->...w", intensity.data, mask)
+        return jnp.sum(measured, axis=-1) if self.sum_wavelengths else measured
+
+    def sample(self, field: Field | Intensity, *, key: jax.Array) -> jnp.ndarray:
         """Sample the detector output with the configured stochastic noise model."""
         return _apply_optional_noise(
             self.expected(field),
@@ -85,15 +112,15 @@ class Detector(Sensor):
             key=key,
         )
 
-    def _resolved_region_mask(self, field: Field) -> jnp.ndarray:
+    def _resolved_region_mask(self, grid: Grid) -> jnp.ndarray:
         if self.region_mask is None:
-            return jnp.ones(field.grid.shape, dtype=jnp.float32)
+            return jnp.ones(grid.shape, dtype=jnp.float32)
 
         mask = jnp.asarray(self.region_mask, dtype=jnp.float32)
-        if mask.shape != (field.grid.ny, field.grid.nx):
+        if mask.shape != (grid.ny, grid.nx):
             raise ValueError(
                 "region_mask must have shape "
-                f"{(field.grid.ny, field.grid.nx)}, got {mask.shape}"
+                f"{(grid.ny, grid.nx)}, got {mask.shape}"
             )
         return mask
 
@@ -131,16 +158,17 @@ class DetectorArray(Sensor):
     resample_method: Literal["nearest", "linear"] = "linear"
     noise_model: SensorNoiseModel | None = None
 
-    def measure(self, field: Field, *, key: jax.Array | None = None) -> jnp.ndarray:
+    def measure(self, field: Field | Intensity, *, key: jax.Array | None = None) -> jnp.ndarray:
         """Return the detector-array readout, optionally with sampled noise."""
         measured = self.expected(field)
         return _apply_optional_noise(measured, noise_model=self.noise_model, key=key)
 
-    def expected(self, field: Field) -> jnp.ndarray:
+    def expected(self, field: Field | Intensity) -> jnp.ndarray:
         """Return the deterministic detector-array signal before noise.
 
         Args:
-            field: Input field. K-space input is converted to spatial domain.
+            field: Input field or intensity. Field input is converted to spatial
+                intensity before integration.
 
         Returns:
             Array with shape ``(*batch, det_ny, det_nx)``,
@@ -149,15 +177,30 @@ class DetectorArray(Sensor):
             ``(*batch, num_wavelengths, 2, det_ny, det_nx)`` depending on
             ``sum_wavelengths`` and ``channel_resolved``.
         """
-        field_spatial = field.to_spatial()
-        channel_resolved = self.channel_resolved and field_spatial.is_jones
-        if channel_resolved:
-            intensity = field_spatial.component_intensity()
+        self.validate_for(field)
+        if isinstance(field, Field):
+            field_spatial = field.to_spatial()
+            channel_resolved = self.channel_resolved and field_spatial.is_jones
+            if channel_resolved:
+                intensity = field_spatial.component_intensity()
+            else:
+                intensity = field_spatial.to_intensity().data
+            grid = field_spatial.grid
+            spectrum_size = field_spatial.spectrum.size
+            dtype = field_spatial.data.real.dtype
         else:
-            intensity = field_spatial.intensity()
+            channel_resolved = False
+            intensity = field.data
+            grid = field.grid
+            spectrum_size = field.spectrum.size
+            dtype = field.data.dtype
 
-        intensity_det = self._integrate_intensity(intensity, field_spatial.grid)
-        weight = self._detector_intensity_weight(field_spatial)
+        intensity_det = self._integrate_intensity(intensity, grid)
+        weight = self._detector_intensity_weight(
+            spectrum_size=spectrum_size,
+            dtype=dtype,
+            detector_grid=self.detector_grid,
+        )
         if channel_resolved:
             intensity_det = intensity_det * weight[:, None, :, :]
         else:
@@ -169,7 +212,7 @@ class DetectorArray(Sensor):
             else intensity_det
         )
 
-    def sample(self, field: Field, *, key: jax.Array) -> jnp.ndarray:
+    def sample(self, field: Field | Intensity, *, key: jax.Array) -> jnp.ndarray:
         """Sample the detector-array output with the configured noise model."""
         return _apply_optional_noise(
             self.expected(field),
@@ -178,6 +221,10 @@ class DetectorArray(Sensor):
         )
 
     def _integrate_intensity(self, intensity: jnp.ndarray, field_grid: Grid) -> jnp.ndarray:
+        if self.resample_method == "linear":
+            return self._resample_intensity_linear(intensity, field_grid)
+        if self.resample_method != "nearest":
+            raise ValueError("resample_method must be one of: nearest, linear")
         x_idx, y_idx, valid = self._detector_bin_indices(field_grid)
         n_det = self.detector_grid.nx * self.detector_grid.ny
         flat_idx = y_idx * self.detector_grid.nx + x_idx
@@ -188,6 +235,19 @@ class DetectorArray(Sensor):
         integrated = jnp.zeros((values.shape[0], n_det), dtype=intensity.dtype)
         integrated = integrated.at[:, flat_idx].add(values)
         return integrated.reshape((*leading_shape, self.detector_grid.ny, self.detector_grid.nx))
+
+    def _resample_intensity_linear(self, intensity: jnp.ndarray, field_grid: Grid) -> jnp.ndarray:
+        # Redistribute each source pixel over overlapping detector pixels so
+        # total signal is preserved when the detector covers the same extent.
+        wx = _overlap_fraction_matrix(
+            _pixel_edges(field_grid, axis="x"),
+            _pixel_edges(self.detector_grid, axis="x"),
+        )
+        wy = _overlap_fraction_matrix(
+            _pixel_edges(field_grid, axis="y"),
+            _pixel_edges(self.detector_grid, axis="y"),
+        )
+        return jnp.einsum("...yx,ay,bx->...ab", intensity, wy, wx)
 
     def _detector_bin_indices(
         self,
@@ -209,25 +269,45 @@ class DetectorArray(Sensor):
         )
         return x_idx.reshape(-1), y_idx.reshape(-1), valid.reshape(-1)
 
-    def _detector_intensity_weight(self, field: Field) -> jnp.ndarray:
-        qe = self._qe_intensity_map(field)
+    def _detector_intensity_weight(
+        self,
+        *,
+        spectrum_size: int,
+        dtype: jnp.dtype,
+        detector_grid: Grid,
+    ) -> jnp.ndarray:
+        qe = self._qe_intensity_map(
+            spectrum_size=spectrum_size,
+            dtype=dtype,
+            detector_grid=detector_grid,
+        )
         if self.filter_mask is None:
             return qe
 
-        self._validate_filter_mask(field)
-        amp = jnp.asarray(self.filter_mask.amplitude_map, dtype=field.data.real.dtype)
+        self._validate_filter_mask(detector_grid)
+        amp = jnp.asarray(self.filter_mask.amplitude_map, dtype=dtype)
         if amp.ndim == 2:
             filt = (amp * amp)[None, :, :]
         else:
+            if amp.shape[0] not in (1, spectrum_size):
+                raise ValueError(
+                    "filter_mask wavelength axis mismatch: "
+                    f"got {amp.shape[0]}, expected 1 or {spectrum_size}"
+                )
             filt = amp * amp
             if filt.shape[0] == 1:
                 filt = jnp.broadcast_to(filt, qe.shape)
         return qe * filt
 
-    def _qe_intensity_map(self, field: Field) -> jnp.ndarray:
-        num_wavelengths = field.spectrum.size
-        dtype = field.data.real.dtype
-        ny, nx = self.detector_grid.ny, self.detector_grid.nx
+    def _qe_intensity_map(
+        self,
+        *,
+        spectrum_size: int,
+        dtype: jnp.dtype,
+        detector_grid: Grid,
+    ) -> jnp.ndarray:
+        num_wavelengths = spectrum_size
+        ny, nx = detector_grid.ny, detector_grid.nx
         if self.qe_curve is None:
             qe_vec = jnp.ones((num_wavelengths,), dtype=dtype)
         else:
@@ -249,17 +329,16 @@ class DetectorArray(Sensor):
                 )
         return qe_vec[:, None, None] * jnp.ones((num_wavelengths, ny, nx), dtype=dtype)
 
-    def _validate_filter_mask(self, field: Field) -> None:
+    def _validate_filter_mask(self, detector_grid: Grid) -> None:
         if self.filter_mask is None:
             return
 
         amp = jnp.asarray(self.filter_mask.amplitude_map)
-        expected_shape = (self.detector_grid.ny, self.detector_grid.nx)
+        expected_shape = (detector_grid.ny, detector_grid.nx)
         if amp.ndim == 2 and amp.shape == expected_shape:
             return
         if amp.ndim == 3 and amp.shape[1:] == expected_shape:
-            if amp.shape[0] in (1, field.spectrum.size):
-                return
+            return
         raise ValueError(
             "filter_mask must be defined on detector_grid with shape "
             "(ny, nx) or (num_wavelengths|1, ny, nx)"

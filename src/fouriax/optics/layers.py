@@ -8,8 +8,8 @@ import jax
 import jax.numpy as jnp
 
 from fouriax.fft import fftconvolve, fftconvolve_same_with_otf
-from fouriax.optics.interfaces import Monitor, OpticalLayer, Sensor
-from fouriax.optics.model import Field
+from fouriax.optics.interfaces import IncoherentLayer, Monitor, OpticalLayer, Sensor
+from fouriax.optics.model import Field, Grid, Intensity
 
 
 def _expand_map(
@@ -158,24 +158,25 @@ def _with_field_metadata(
     )
 
 
-def _expand_psf_for_field(psf: jnp.ndarray, field: Field) -> jnp.ndarray:
-    arr = jnp.asarray(psf)
+def _expand_psf_for_intensity(psf: Intensity) -> jnp.ndarray:
+    psf.validate()
+    arr = jnp.asarray(psf.data)
     if arr.ndim == 2:
-        if arr.shape != (field.grid.ny, field.grid.nx):
+        if arr.shape != (psf.grid.ny, psf.grid.nx):
             raise ValueError(
-                f"psf shape mismatch: got {arr.shape}, expected {(field.grid.ny, field.grid.nx)}"
+                f"psf shape mismatch: got {arr.shape}, expected {(psf.grid.ny, psf.grid.nx)}"
             )
         return arr[None, :, :]
     if arr.ndim == 3:
-        if arr.shape[1:] != (field.grid.ny, field.grid.nx):
+        if arr.shape[1:] != (psf.grid.ny, psf.grid.nx):
             raise ValueError(
                 "psf shape mismatch: got "
-                f"{arr.shape[1:]}, expected {(field.grid.ny, field.grid.nx)}"
+                f"{arr.shape[1:]}, expected {(psf.grid.ny, psf.grid.nx)}"
             )
-        if arr.shape[0] not in (1, field.spectrum.size):
+        if arr.shape[0] not in (1, psf.spectrum.size):
             raise ValueError(
                 f"psf wavelength axis mismatch: got {arr.shape[0]}, expected 1 or "
-                f"{field.spectrum.size}"
+                f"{psf.spectrum.size}"
             )
         return arr
     raise ValueError("psf must have shape (ny, nx) or (num_wavelengths, ny, nx)")
@@ -186,6 +187,34 @@ def _centered_delta_field(field: Field) -> Field:
     cy = field.grid.ny // 2
     cx = field.grid.nx // 2
     data = data.at[..., cy, cx].set(1.0 + 0.0j)
+    return Field(
+        data=data,
+        grid=field.grid,
+        spectrum=field.spectrum,
+        polarization_mode=field.polarization_mode,
+        domain="spatial",
+        kx_pixel_size_cyc_per_um=field.kx_pixel_size_cyc_per_um,
+        ky_pixel_size_cyc_per_um=field.ky_pixel_size_cyc_per_um,
+    )
+
+
+def _point_source_field(
+    field: Field,
+    *,
+    distance_um: float,
+    source_x_um: float = 0.0,
+    source_y_um: float = 0.0,
+) -> Field:
+    if distance_um <= 0:
+        raise ValueError("object_distance_um must be strictly positive")
+
+    x, y = field.grid.spatial_grid()
+    r = jnp.sqrt((x - source_x_um) ** 2 + (y - source_y_um) ** 2 + distance_um**2)
+    waves = []
+    for wavelength_um in field.spectrum.wavelengths_um:
+        k_um_inv = (2.0 * jnp.pi) / jnp.asarray(wavelength_um, dtype=field.data.real.dtype)
+        waves.append(jnp.exp(1j * k_um_inv * r) / jnp.maximum(r, 1e-12))
+    data = jnp.stack(waves, axis=0).astype(field.data.dtype)
     return Field(
         data=data,
         grid=field.grid,
@@ -693,13 +722,13 @@ class ThinLens(OpticalLayer):
 
 
 @dataclass(frozen=True)
-class IncoherentImager(OpticalLayer):
+class IncoherentImager(IncoherentLayer):
     """Incoherent shift-invariant imager built from coherent optics.
 
-    The PSF is constructed by propagating a calibration source (impulse
-    or plane wave) through ``optical_layer`` followed by a propagator at
-    ``distance_um`` and taking the output intensity.  The input field's
-    intensity is then convolved with this PSF.
+    The PSF is constructed by propagating a calibration source through
+    ``optical_layer`` followed by a propagator at ``distance_um`` and
+    taking the output intensity. The input intensity is then convolved
+    with this PSF.
 
     Requires spatial-domain, scalar input.
 
@@ -708,8 +737,10 @@ class IncoherentImager(OpticalLayer):
         propagator: Propagation layer (e.g. ``ASMPropagator``) whose
             ``distance_um`` will be overridden.
         distance_um: Imaging distance in micrometers.
-        psf_source: Calibration source type (``"impulse"`` or
-            ``"plane_wave_focus"``).
+        psf_source: Calibration source type (``"impulse"``,
+            ``"plane_wave_focus"``, or ``"point_source"``).
+        object_distance_um: Object distance in micrometers when
+            ``psf_source="point_source"``.
         normalize_psf: Normalise the PSF so it sums to unity.
         enforce_nonnegative_psf: Clamp negative PSF values to zero.
         mode: Convolution backend — ``"psf"``, ``"otf"``, or ``"auto"``.
@@ -722,7 +753,8 @@ class IncoherentImager(OpticalLayer):
     optical_layer: OpticalLayer
     propagator: OpticalLayer
     distance_um: float
-    psf_source: Literal["impulse", "plane_wave_focus"] = "impulse"
+    psf_source: Literal["impulse", "plane_wave_focus", "point_source"] = "impulse"
+    object_distance_um: float | None = None
     normalize_psf: bool = True
     enforce_nonnegative_psf: bool = True
     mode: Literal["psf", "otf", "auto"] = "auto"
@@ -731,11 +763,73 @@ class IncoherentImager(OpticalLayer):
     )
     normalization_reference_distance_um: float | None = None
 
-    def normalization_distance_um(self, field: Field) -> float:
+    @classmethod
+    def for_far_field(
+        cls,
+        *,
+        optical_layer: OpticalLayer,
+        propagator: OpticalLayer,
+        image_distance_um: float,
+        normalize_psf: bool = True,
+        enforce_nonnegative_psf: bool = True,
+        mode: Literal["psf", "otf", "auto"] = "auto",
+        normalization_reference: Literal[
+            "near_1um",
+            "near_wavelength",
+            "at_imaging_distance",
+        ] = "near_wavelength",
+        normalization_reference_distance_um: float | None = None,
+    ) -> "IncoherentImager":
+        """Construct a far-field imager using a plane-wave calibration source."""
+        return cls(
+            optical_layer=optical_layer,
+            propagator=propagator,
+            distance_um=image_distance_um,
+            psf_source="plane_wave_focus",
+            normalize_psf=normalize_psf,
+            enforce_nonnegative_psf=enforce_nonnegative_psf,
+            mode=mode,
+            normalization_reference=normalization_reference,
+            normalization_reference_distance_um=normalization_reference_distance_um,
+        )
+
+    @classmethod
+    def for_finite_distance(
+        cls,
+        *,
+        optical_layer: OpticalLayer,
+        propagator: OpticalLayer,
+        object_distance_um: float,
+        image_distance_um: float,
+        normalize_psf: bool = True,
+        enforce_nonnegative_psf: bool = True,
+        mode: Literal["psf", "otf", "auto"] = "auto",
+        normalization_reference: Literal[
+            "near_1um",
+            "near_wavelength",
+            "at_imaging_distance",
+        ] = "near_wavelength",
+        normalization_reference_distance_um: float | None = None,
+    ) -> "IncoherentImager":
+        """Construct a finite-distance imager using an on-axis point source."""
+        return cls(
+            optical_layer=optical_layer,
+            propagator=propagator,
+            distance_um=image_distance_um,
+            psf_source="point_source",
+            object_distance_um=object_distance_um,
+            normalize_psf=normalize_psf,
+            enforce_nonnegative_psf=enforce_nonnegative_psf,
+            mode=mode,
+            normalization_reference=normalization_reference,
+            normalization_reference_distance_um=normalization_reference_distance_um,
+        )
+
+    def normalization_distance_um(self, intensity: Intensity) -> float:
         """Choose the reference distance used to normalize the PSF.
 
         Args:
-            field: Input scalar field whose wavelength range may be used when
+            intensity: Input intensity whose wavelength range may be used when
                 ``normalization_reference="near_wavelength"``.
 
         Returns:
@@ -748,7 +842,7 @@ class IncoherentImager(OpticalLayer):
         if self.normalization_reference == "near_1um":
             return 1.0
         if self.normalization_reference == "near_wavelength":
-            return max(1e-3, float(jnp.min(field.spectrum.wavelengths_um)))
+            return max(1e-3, float(jnp.min(intensity.spectrum.wavelengths_um)))
         if self.normalization_reference == "at_imaging_distance":
             return float(self.distance_um)
         raise ValueError(
@@ -756,24 +850,24 @@ class IncoherentImager(OpticalLayer):
             "near_1um, near_wavelength, at_imaging_distance"
         )
 
-    def build_psf(self, field: Field) -> jnp.ndarray:
+    def build_psf(self, field: Field) -> Intensity:
         """Construct the imaging PSF on the input field grid.
 
         Args:
             field: Spatial-domain scalar field defining the grid and spectrum.
 
         Returns:
-            Real PSF array with shape ``(num_wavelengths, ny, nx)``.
+            Spatial PSF intensity with shape ``(num_wavelengths, ny, nx)``.
         """
         _require_domain(field, expected="spatial", layer_name="IncoherentImager")
         if field.is_jones:
             raise ValueError("IncoherentImager currently supports scalar fields only")
         spatial_field = field
-        self.validate_for(spatial_field)
+        spatial_field.validate()
         if self.distance_um <= 0:
             raise ValueError("distance_um must be strictly positive")
-        if self.psf_source not in ("impulse", "plane_wave_focus"):
-            raise ValueError("psf_source must be one of: impulse, plane_wave_focus")
+        if self.psf_source not in ("impulse", "plane_wave_focus", "point_source"):
+            raise ValueError("psf_source must be one of: impulse, plane_wave_focus, point_source")
 
         calibration_field = Field.zeros(
             grid=spatial_field.grid,
@@ -782,51 +876,167 @@ class IncoherentImager(OpticalLayer):
         )
         if self.psf_source == "impulse":
             source = _centered_delta_field(calibration_field)
-        else:
+        elif self.psf_source == "plane_wave_focus":
             source = Field.plane_wave(
                 grid=spatial_field.grid,
                 spectrum=spatial_field.spectrum,
                 dtype=spatial_field.data.dtype,
+            )
+        else:
+            if self.object_distance_um is None:
+                raise ValueError("object_distance_um must be set when psf_source='point_source'")
+            source = _point_source_field(
+                calibration_field,
+                distance_um=self.object_distance_um,
             )
 
         coherent = self.optical_layer.forward(source)
         propagator = replace(self.propagator, distance_um=self.distance_um)  # type: ignore[type-var]
         response = propagator.forward(coherent)
         _require_domain(response, expected="spatial", layer_name="IncoherentImager")
-        psf = response.intensity().astype(spatial_field.data.real.dtype)
+        psf = response.to_intensity()
 
         if self.enforce_nonnegative_psf:
-            psf = jnp.maximum(psf, 0.0)
+            psf = Intensity(
+                data=jnp.maximum(psf.data, 0.0),
+                grid=psf.grid,
+                spectrum=psf.spectrum,
+            )
         if self.normalize_psf:
-            norm_distance_um = self.normalization_distance_um(spatial_field)
+            norm_distance_um = self.normalization_distance_um(psf)
             if abs(norm_distance_um - self.distance_um) < 1e-12:
-                sums = jnp.sum(psf, axis=(-2, -1), keepdims=True)
+                sums = jnp.sum(psf.data, axis=(-2, -1), keepdims=True)
             else:
                 ref_propagator = replace(self.propagator, distance_um=norm_distance_um)  # type: ignore[type-var]
                 ref_response = ref_propagator.forward(coherent)
                 _require_domain(ref_response, expected="spatial", layer_name="IncoherentImager")
-                ref_psf = ref_response.intensity().astype(spatial_field.data.real.dtype)
+                ref_psf = ref_response.to_intensity()
                 if self.enforce_nonnegative_psf:
-                    ref_psf = jnp.maximum(ref_psf, 0.0)
-                sums = jnp.sum(ref_psf, axis=(-2, -1), keepdims=True)
-            psf = psf / jnp.maximum(sums, 1e-12)
+                    ref_psf = Intensity(
+                        data=jnp.maximum(ref_psf.data, 0.0),
+                        grid=ref_psf.grid,
+                        spectrum=ref_psf.spectrum,
+                    )
+                sums = jnp.sum(ref_psf.data, axis=(-2, -1), keepdims=True)
+            psf = Intensity(
+                data=psf.data / jnp.maximum(sums, 1e-12),
+                grid=psf.grid,
+                spectrum=psf.spectrum,
+            )
+        psf.validate()
         return psf
 
-    def forward(self, field: Field) -> Field:
-        """Apply shift-invariant incoherent imaging to a scalar field.
+    def infer_from_paraxial_limit(
+        self,
+        sensor_grid: Grid,
+        paraxial_max_angle_rad: float,
+    ) -> Grid:
+        """Infer a same-shape input grid from a sensor grid under paraxial limits.
+
+        The returned grid preserves ``sensor_grid.nx`` and ``sensor_grid.ny``.
+        Only the pixel pitch changes, according to the imaging geometry:
+
+        - ``plane_wave_focus`` imagers return an image-equivalent far-field grid
+          with the same pitch as the sensor grid.
+        - ``point_source`` imagers return an object-plane grid whose pitch is
+          scaled by the magnification ``|M| = image_distance / object_distance``.
+
+        The supplied ``sensor_grid`` must fit within the paraxial field of view
+        set by ``paraxial_max_angle_rad`` at the image/sensor distance.
 
         Args:
-            field: Spatial-domain scalar field.
+            sensor_grid: Detector-plane grid to map from.
+            paraxial_max_angle_rad: Maximum allowed paraxial ray angle in radians.
 
         Returns:
-            Spatial-domain scalar field whose amplitude is the square root of
-            the imaged intensity.
+            A same-shape input grid compatible with the configured imaging mode.
+
+        Raises:
+            ValueError: If the paraxial limit or imager geometry is invalid, if
+                the sensor grid exceeds the paraxial field of view, or if the
+                imager source mode does not define object/sensor geometry.
         """
-        _require_domain(field, expected="spatial", layer_name="IncoherentImager")
-        spatial_field = field
-        self.validate_for(spatial_field)
-        psf = _expand_psf_for_field(self.build_psf(spatial_field), spatial_field)
-        intensity = spatial_field.intensity().astype(spatial_field.data.real.dtype)
+        sensor_grid.validate()
+        if paraxial_max_angle_rad <= 0:
+            raise ValueError("paraxial_max_angle_rad must be strictly positive")
+        if self.distance_um <= 0:
+            raise ValueError("distance_um must be strictly positive")
+
+        max_sensor_half_extent_um = self.distance_um * math.tan(paraxial_max_angle_rad)
+        sensor_half_width_um = 0.5 * sensor_grid.nx * sensor_grid.dx_um
+        sensor_half_height_um = 0.5 * sensor_grid.ny * sensor_grid.dy_um
+        if (
+            sensor_half_width_um > max_sensor_half_extent_um
+            or sensor_half_height_um > max_sensor_half_extent_um
+        ):
+            raise ValueError(
+                "sensor_grid exceeds the paraxial field of view for the configured "
+                f"image distance: half extents ({sensor_half_width_um:.3f}, "
+                f"{sensor_half_height_um:.3f}) um exceed "
+                f"{max_sensor_half_extent_um:.3f} um"
+            )
+
+        if self.psf_source == "plane_wave_focus":
+            return Grid.from_extent(
+                nx=sensor_grid.nx,
+                ny=sensor_grid.ny,
+                dx_um=sensor_grid.dx_um,
+                dy_um=sensor_grid.dy_um,
+            )
+
+        if self.psf_source == "point_source":
+            if self.object_distance_um is None or self.object_distance_um <= 0:
+                raise ValueError(
+                    "object_distance_um must be strictly positive when "
+                    "inferring a finite-distance input grid"
+                )
+            magnification = abs(self.distance_um / self.object_distance_um)
+            if magnification <= 0:
+                raise ValueError("finite-distance magnification must be strictly positive")
+
+            input_grid = Grid.from_extent(
+                nx=sensor_grid.nx,
+                ny=sensor_grid.ny,
+                dx_um=sensor_grid.dx_um / magnification,
+                dy_um=sensor_grid.dy_um / magnification,
+            )
+
+            max_input_half_extent_um = self.object_distance_um * math.tan(paraxial_max_angle_rad)
+            input_half_width_um = 0.5 * input_grid.nx * input_grid.dx_um
+            input_half_height_um = 0.5 * input_grid.ny * input_grid.dy_um
+            if (
+                input_half_width_um > max_input_half_extent_um
+                or input_half_height_um > max_input_half_extent_um
+            ):
+                raise ValueError(
+                    "inferred input grid exceeds the paraxial field of view for the "
+                    f"configured object distance: half extents ({input_half_width_um:.3f}, "
+                    f"{input_half_height_um:.3f}) um exceed "
+                    f"{max_input_half_extent_um:.3f} um"
+                )
+            return input_grid
+
+        raise ValueError(
+            "infer_from_paraxial_limit is only supported for far-field "
+            "(plane_wave_focus) and finite-distance (point_source) imagers"
+        )
+
+    def forward(self, intensity: Intensity) -> Intensity:
+        """Apply shift-invariant incoherent imaging to a spatial intensity.
+
+        Args:
+            intensity: Spatial intensity image.
+
+        Returns:
+            Spatial intensity after PSF or OTF filtering.
+        """
+        self.validate_for(intensity)
+        template = Field.zeros(
+            grid=intensity.grid,
+            spectrum=intensity.spectrum,
+            dtype=jnp.result_type(intensity.data.dtype, 1j),
+        )
+        psf = _expand_psf_for_intensity(self.build_psf(template))
 
         if self.mode not in ("psf", "otf", "auto"):
             raise ValueError("mode must be one of: psf, otf, auto")
@@ -835,18 +1045,18 @@ class IncoherentImager(OpticalLayer):
             # FFT-domain imaging becomes favorable for larger kernels/grids.
             resolved_mode = (
                 "otf"
-                if (spatial_field.grid.nx * spatial_field.grid.ny) >= 4096
+                if (intensity.grid.nx * intensity.grid.ny) >= 4096
                 else "psf"
             )
 
-        batch_shape = spatial_field.batch_shape
+        batch_shape = intensity.batch_shape
         flat_batch = math.prod(batch_shape) if batch_shape else 1
-        flat_intensity = intensity.reshape(
-            (flat_batch, spatial_field.spectrum.size, spatial_field.grid.ny, spatial_field.grid.nx)
+        flat_intensity = intensity.data.reshape(
+            (flat_batch, intensity.spectrum.size, intensity.grid.ny, intensity.grid.nx)
         )
         outputs: list[jnp.ndarray] = []
         if resolved_mode == "otf":
-            ky, kx = spatial_field.grid.ny, spatial_field.grid.nx
+            ky, kx = intensity.grid.ny, intensity.grid.nx
             full_shape = (2 * ky - 1, 2 * kx - 1)
             otf = jnp.stack(
                 [
@@ -855,11 +1065,11 @@ class IncoherentImager(OpticalLayer):
                         s=full_shape,
                         axes=(-2, -1),
                     )
-                    for i in range(spatial_field.spectrum.size)
+                    for i in range(intensity.spectrum.size)
                 ],
                 axis=0,
             )
-            for i in range(spatial_field.spectrum.size):
+            for i in range(intensity.spectrum.size):
                 outputs.append(
                     fftconvolve_same_with_otf(
                         flat_intensity[:, i],
@@ -868,7 +1078,7 @@ class IncoherentImager(OpticalLayer):
                     )
                 )
         else:
-            for i in range(spatial_field.spectrum.size):
+            for i in range(intensity.spectrum.size):
                 psf_i = psf[0] if psf.shape[0] == 1 else psf[i]
                 outputs.append(
                     fftconvolve(flat_intensity[:, i], psf_i, mode="same", axes=(-2, -1))
@@ -877,27 +1087,26 @@ class IncoherentImager(OpticalLayer):
         image = jnp.stack(outputs, axis=1).reshape(
             (
                 *batch_shape,
-                spatial_field.spectrum.size,
-                spatial_field.grid.ny,
-                spatial_field.grid.nx,
+                intensity.spectrum.size,
+                intensity.grid.ny,
+                intensity.grid.nx,
             )
         )
-        amplitude = jnp.sqrt(jnp.maximum(image, 0.0)).astype(spatial_field.data.real.dtype)
-        return Field(
-            data=amplitude.astype(spatial_field.data.dtype),
-            grid=spatial_field.grid,
-            spectrum=spatial_field.spectrum,
-            polarization_mode=spatial_field.polarization_mode,
-            domain="spatial",
-            kx_pixel_size_cyc_per_um=spatial_field.kx_pixel_size_cyc_per_um,
-            ky_pixel_size_cyc_per_um=spatial_field.ky_pixel_size_cyc_per_um,
+        image_out = Intensity(
+            data=image.astype(intensity.data.dtype),
+            grid=intensity.grid,
+            spectrum=intensity.spectrum,
         )
+        image_out.validate()
+        return image_out
 
     def parameters(self) -> dict[str, jnp.ndarray]:
         """Return imager parameters together with nested optical-layer parameters."""
         params: dict[str, jnp.ndarray] = {
             "distance_um": jnp.asarray(self.distance_um, dtype=jnp.float32),
         }
+        if self.object_distance_um is not None:
+            params["object_distance_um"] = jnp.asarray(self.object_distance_um, dtype=jnp.float32)
         for key, value in self.optical_layer.parameters().items():
             params[f"optical_layer.{key}"] = value
         return params

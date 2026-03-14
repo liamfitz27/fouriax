@@ -20,6 +20,24 @@ def _test_grid_and_spectrum() -> tuple[Grid, Spectrum]:
     return grid, spectrum
 
 
+def _point_source_field(
+    grid: Grid,
+    spectrum: Spectrum,
+    *,
+    distance_um: float,
+) -> Field:
+    x, y = grid.spatial_grid()
+    r = jnp.sqrt(x * x + y * y + distance_um**2)
+    data = jnp.stack(
+        [
+            jnp.exp(1j * ((2.0 * jnp.pi) / wavelength_um) * r) / r
+            for wavelength_um in spectrum.wavelengths_um
+        ],
+        axis=0,
+    ).astype(jnp.complex64)
+    return Field(data=data, grid=grid, spectrum=spectrum)
+
+
 def test_psf_imager_build_psf_matches_manual_impulse_path():
     grid, spectrum = _test_grid_and_spectrum()
     lens = ThinLens(focal_length_um=60.0, aperture_diameter_um=14.0)
@@ -54,18 +72,17 @@ def test_psf_imager_build_psf_matches_manual_impulse_path():
         .to_spatial()
         .intensity()
     )
-    np.testing.assert_allclose(np.asarray(psf), np.asarray(expected), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(psf.data), np.asarray(expected), atol=1e-6)
 
 
 def test_psf_imager_build_psf_matches_manual_plane_wave_path():
     grid, spectrum = _test_grid_and_spectrum()
     lens = ThinLens(focal_length_um=70.0, aperture_diameter_um=16.0)
     rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.07)
-    imager = IncoherentImager(
+    imager = IncoherentImager.for_far_field(
         optical_layer=lens,
         propagator=rs,
-        distance_um=70.0,
-        psf_source="plane_wave_focus",
+        image_distance_um=70.0,
         normalize_psf=False,
     )
 
@@ -82,7 +99,104 @@ def test_psf_imager_build_psf_matches_manual_plane_wave_path():
         .to_spatial()
         .intensity()
     )
-    np.testing.assert_allclose(np.asarray(psf), np.asarray(expected), atol=1e-6)
+    np.testing.assert_allclose(np.asarray(psf.data), np.asarray(expected), atol=1e-6)
+
+
+def test_psf_imager_build_psf_matches_manual_finite_distance_point_source_path():
+    grid, spectrum = _test_grid_and_spectrum()
+    object_distance_um = 120.0
+    image_distance_um = 60.0
+    lens = ThinLens(focal_length_um=40.0, aperture_diameter_um=16.0)
+    rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.07)
+    imager = IncoherentImager.for_finite_distance(
+        optical_layer=lens,
+        propagator=rs,
+        object_distance_um=object_distance_um,
+        image_distance_um=image_distance_um,
+        normalize_psf=False,
+    )
+
+    field_ref = Field.plane_wave(grid=grid, spectrum=spectrum)
+    psf = imager.build_psf(field_ref)
+    expected = (
+        RSPropagator(
+            use_sampling_planner=False,
+            warn_on_regime_mismatch=False,
+            na_limit=0.07,
+            distance_um=image_distance_um,
+        )
+        .forward(lens.forward(_point_source_field(grid, spectrum, distance_um=object_distance_um)))
+        .to_spatial()
+        .intensity()
+    )
+    np.testing.assert_allclose(np.asarray(psf.data), np.asarray(expected), atol=1e-6)
+
+
+def test_psf_imager_infer_from_paraxial_limit_far_field_preserves_sensor_pitch():
+    grid, spectrum = _test_grid_and_spectrum()
+    lens = ThinLens(focal_length_um=70.0, aperture_diameter_um=16.0)
+    rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.07)
+    imager = IncoherentImager.for_far_field(
+        optical_layer=lens,
+        propagator=rs,
+        image_distance_um=70.0,
+    )
+    sensor_grid = Grid.from_extent(nx=15, ny=11, dx_um=0.7, dy_um=0.8)
+
+    inferred = imager.infer_from_paraxial_limit(sensor_grid, paraxial_max_angle_rad=0.1)
+
+    assert inferred == sensor_grid
+
+
+def test_psf_imager_infer_from_paraxial_limit_finite_distance_scales_input_pitch():
+    grid, spectrum = _test_grid_and_spectrum()
+    lens = ThinLens(focal_length_um=40.0, aperture_diameter_um=16.0)
+    rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.07)
+    imager = IncoherentImager.for_finite_distance(
+        optical_layer=lens,
+        propagator=rs,
+        object_distance_um=120.0,
+        image_distance_um=60.0,
+    )
+    sensor_grid = Grid.from_extent(nx=15, ny=11, dx_um=1.0, dy_um=1.4)
+
+    inferred = imager.infer_from_paraxial_limit(sensor_grid, paraxial_max_angle_rad=0.15)
+
+    assert inferred.nx == sensor_grid.nx
+    assert inferred.ny == sensor_grid.ny
+    assert inferred.dx_um == pytest.approx(2.0)
+    assert inferred.dy_um == pytest.approx(2.8)
+
+
+def test_psf_imager_infer_from_paraxial_limit_rejects_sensor_outside_limit():
+    grid, spectrum = _test_grid_and_spectrum()
+    lens = ThinLens(focal_length_um=70.0, aperture_diameter_um=16.0)
+    rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.07)
+    imager = IncoherentImager.for_far_field(
+        optical_layer=lens,
+        propagator=rs,
+        image_distance_um=70.0,
+    )
+    sensor_grid = Grid.from_extent(nx=21, ny=21, dx_um=1.0, dy_um=1.0)
+
+    with pytest.raises(ValueError, match="sensor_grid exceeds the paraxial field of view"):
+        imager.infer_from_paraxial_limit(sensor_grid, paraxial_max_angle_rad=0.1)
+
+
+def test_psf_imager_infer_from_paraxial_limit_rejects_impulse_mode():
+    grid, spectrum = _test_grid_and_spectrum()
+    lens = ThinLens(focal_length_um=60.0, aperture_diameter_um=14.0)
+    rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.08)
+    imager = IncoherentImager(
+        optical_layer=lens,
+        propagator=rs,
+        distance_um=60.0,
+        psf_source="impulse",
+    )
+    sensor_grid = Grid.from_extent(nx=9, ny=9, dx_um=1.0, dy_um=1.0)
+
+    with pytest.raises(ValueError, match="infer_from_paraxial_limit is only supported"):
+        imager.infer_from_paraxial_limit(sensor_grid, paraxial_max_angle_rad=0.2)
 
 
 def test_psf_imager_psf_and_otf_modes_are_consistent():
@@ -91,6 +205,7 @@ def test_psf_imager_psf_and_otf_modes_are_consistent():
     rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.08)
 
     field = Field.plane_wave(grid=grid, spectrum=spectrum).apply_phase(0.3)
+    intensity = field.to_intensity()
     psf_mode = IncoherentImager(
         optical_layer=lens,
         propagator=rs,
@@ -108,8 +223,8 @@ def test_psf_imager_psf_and_otf_modes_are_consistent():
         mode="otf",
     )
 
-    out_psf = psf_mode.forward(field).intensity()
-    out_otf = otf_mode.forward(field).intensity()
+    out_psf = psf_mode.forward(intensity).data
+    out_otf = otf_mode.forward(intensity).data
     np.testing.assert_allclose(np.asarray(out_psf), np.asarray(out_otf), atol=3e-5, rtol=1e-5)
 
 
@@ -117,6 +232,7 @@ def test_psf_imager_supports_gradients_through_optical_layer():
     grid, spectrum = _test_grid_and_spectrum()
     rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.08)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
+    intensity = field.to_intensity()
     x, y = grid.spatial_grid()
     target = jnp.exp(-((x**2 + y**2) / (2.0 * 3.5**2)))
 
@@ -130,7 +246,7 @@ def test_psf_imager_supports_gradients_through_optical_layer():
             normalize_psf=True,
             mode="otf",
         )
-        out = imager.forward(field).intensity()
+        out = imager.forward(intensity).data
         return jnp.mean((out[0] - target) ** 2)
 
     grad = jax.grad(loss_fn)(jnp.asarray(0.02, dtype=jnp.float32))
@@ -143,6 +259,7 @@ def test_psf_imager_auto_mode_matches_otf_on_large_grid():
     lens = ThinLens(focal_length_um=70.0, aperture_diameter_um=16.0)
     rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False, na_limit=0.07)
     field = Field.plane_wave(grid=grid, spectrum=spectrum).apply_phase(0.15)
+    intensity = field.to_intensity()
 
     auto_mode = IncoherentImager(
         optical_layer=lens,
@@ -161,8 +278,8 @@ def test_psf_imager_auto_mode_matches_otf_on_large_grid():
         mode="otf",
     )
 
-    out_auto = auto_mode.forward(field).intensity()
-    out_otf = otf_mode.forward(field).intensity()
+    out_auto = auto_mode.forward(intensity).data
+    out_otf = otf_mode.forward(intensity).data
     np.testing.assert_allclose(np.asarray(out_auto), np.asarray(out_otf), atol=3e-5, rtol=1e-5)
 
 
@@ -171,6 +288,7 @@ def test_psf_imager_normalization_distance_method():
     lens = ThinLens(focal_length_um=50.0, aperture_diameter_um=12.0)
     rs = RSPropagator(use_sampling_planner=False, warn_on_regime_mismatch=False)
     field = Field.plane_wave(grid=grid, spectrum=spectrum)
+    intensity = field.to_intensity()
 
     near_um = IncoherentImager(
         optical_layer=lens,
@@ -178,7 +296,7 @@ def test_psf_imager_normalization_distance_method():
         distance_um=50.0,
         normalization_reference="near_1um",
     )
-    assert near_um.normalization_distance_um(field) == 1.0
+    assert near_um.normalization_distance_um(intensity) == 1.0
 
     near_wl = IncoherentImager(
         optical_layer=lens,
@@ -187,7 +305,7 @@ def test_psf_imager_normalization_distance_method():
         normalization_reference="near_wavelength",
     )
     assert np.isclose(
-        near_wl.normalization_distance_um(field),
+        near_wl.normalization_distance_um(intensity),
         float(jnp.min(spectrum.wavelengths_um)),
     )
 
@@ -197,7 +315,7 @@ def test_psf_imager_normalization_distance_method():
         distance_um=50.0,
         normalization_reference="at_imaging_distance",
     )
-    assert at_dist.normalization_distance_um(field) == 50.0
+    assert at_dist.normalization_distance_um(intensity) == 50.0
 
 
 def test_psf_imager_near_reference_changes_psf_gain_vs_imaging_distance_reference():
@@ -226,9 +344,9 @@ def test_psf_imager_near_reference_changes_psf_gain_vs_imaging_distance_referenc
     psf_dist = at_dist_ref.build_psf(field)
     # At-imaging-distance normalization enforces unit-sum PSF on-grid.
     np.testing.assert_allclose(
-        np.asarray(jnp.sum(psf_dist, axis=(-2, -1))),
+        np.asarray(jnp.sum(psf_dist.data, axis=(-2, -1))),
         np.ones((1,)),
         atol=1e-5,
     )
     # Near-reference normalization is intentionally different when far-field spills beyond grid.
-    assert float(jnp.sum(psf_near)) != pytest.approx(1.0, abs=1e-3)
+    assert float(jnp.sum(psf_near.data)) != pytest.approx(1.0, abs=1e-3)
