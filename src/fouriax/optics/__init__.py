@@ -1,6 +1,6 @@
 """Core optics data models."""
 
-from fouriax.optics.interfaces import Monitor, OpticalLayer, Sensor
+from fouriax.optics.interfaces import IncoherentLayer, Monitor, OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
     ComplexMask,
@@ -17,7 +17,7 @@ from fouriax.optics.layers import (
     ThinLens,
 )
 from fouriax.optics.meta_atoms import MetaAtomInterpolationLayer, MetaAtomLibrary
-from fouriax.optics.model import Field, Grid, Spectrum
+from fouriax.optics.model import Field, Grid, Intensity, Spectrum
 from fouriax.optics.monitors import FieldMonitor, IntensityMonitor
 from fouriax.optics.na_planning import (
     apply_na_limits,
@@ -48,6 +48,7 @@ from fouriax.optics.sensors import Detector, DetectorArray
 
 __all__ = [
     "Field",
+    "Intensity",
     "Grid",
     "Spectrum",
     "SensorNoiseModel",
@@ -59,6 +60,7 @@ __all__ = [
     "FieldMonitor",
     "build_na_mask",
     "OpticalLayer",
+    "IncoherentLayer",
     "Sensor",
     "OpticalModule",
     "PhaseMask",

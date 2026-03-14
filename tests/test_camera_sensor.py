@@ -3,7 +3,15 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from fouriax.optics import AmplitudeMask, DetectorArray, Field, Grid, PoissonNoise, Spectrum
+from fouriax.optics import (
+    AmplitudeMask,
+    DetectorArray,
+    Field,
+    Grid,
+    Intensity,
+    PoissonNoise,
+    Spectrum,
+)
 
 
 def _two_wavelength_field() -> Field:
@@ -69,6 +77,36 @@ def test_detector_array_can_resample_to_readout_grid():
     assert measured.shape == (readout_grid.ny, readout_grid.nx)
 
 
+def test_detector_array_linear_resampling_distributes_coarse_pixels_over_finer_grid():
+    src_grid = Grid.from_extent(nx=2, ny=2, dx_um=2.0, dy_um=2.0)
+    spectrum = Spectrum.from_scalar(0.532)
+    intensity = Intensity(
+        data=jnp.asarray([[[1.0, 2.0], [3.0, 4.0]]], dtype=jnp.float32),
+        grid=src_grid,
+        spectrum=spectrum,
+    )
+    detector_grid = Grid.from_extent(nx=4, ny=4, dx_um=1.0, dy_um=1.0)
+    sensor = DetectorArray(
+        detector_grid=detector_grid,
+        qe_curve=1.0,
+        resample_method="linear",
+    )
+
+    measured = sensor.measure(intensity)
+    expected = np.asarray(
+        [
+            [0.25, 0.25, 0.50, 0.50],
+            [0.25, 0.25, 0.50, 0.50],
+            [0.75, 0.75, 1.00, 1.00],
+            [0.75, 0.75, 1.00, 1.00],
+        ],
+        dtype=np.float32,
+    )
+
+    np.testing.assert_allclose(np.asarray(measured), expected, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(jnp.sum(measured)), 10.0, atol=1e-6)
+
+
 def test_detector_array_integrates_intensity_without_complex_cancellation():
     grid = Grid.from_extent(nx=2, ny=1, dx_um=1.0, dy_um=1.0)
     spectrum = Spectrum.from_scalar(0.532)
@@ -101,3 +139,30 @@ def test_detector_array_noise_is_opt_in_via_key():
     assert clean.shape == noisy.shape
     # Sampling should perturb at least one element with overwhelming probability.
     assert not np.array_equal(np.asarray(clean), np.asarray(noisy))
+
+
+def test_detector_array_accepts_explicit_intensity_input():
+    field = _two_wavelength_field()
+    intensity = field.to_intensity()
+    sensor = DetectorArray(
+        detector_grid=field.grid,
+        qe_curve=1.0,
+        sum_wavelengths=False,
+    )
+
+    from_field = sensor.measure(field)
+    from_intensity = sensor.measure(intensity)
+    np.testing.assert_allclose(np.asarray(from_intensity), np.asarray(from_field), atol=1e-6)
+
+
+def test_detector_array_rejects_complex_intensity_input():
+    field = _two_wavelength_field()
+    bad = Intensity(
+        data=jnp.ones((field.spectrum.size, field.grid.ny, field.grid.nx), dtype=jnp.complex64),
+        grid=field.grid,
+        spectrum=field.spectrum,
+    )
+    sensor = DetectorArray(detector_grid=field.grid, qe_curve=1.0)
+
+    with pytest.raises(ValueError, match="intensity data must be real-valued"):
+        sensor.measure(bad)

@@ -27,11 +27,11 @@ repos:
         entry: bash -c '.venv/bin/python -m mypy src'
         language: system
         pass_filenames: false
-        stages: [pre-push]
+        stages: [pre-commit]
 
       - id: pytest
         name: pytest
         entry: bash -c 'PYTHONPATH=src .venv/bin/python -m pytest -q'
         language: system
         pass_filenames: false
-        stages: [pre-push]
+        stages: [pre-commit]

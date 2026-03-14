@@ -11,12 +11,12 @@ Documentation: <https://liamfitz27.github.io/fouriax/>
 
 ## Features
 
-- **Composable optical stack** — build systems from `OpticalLayer` transforms composed in an `OpticalModule`, with explicit spatial ↔ k-space domain transitions via `FourierTransform` / `InverseFourierTransform`.
+- **Composable optical stack** — build coherent systems from `OpticalLayer` transforms composed in an `OpticalModule`, with explicit spatial ↔ k-space domain transitions via `FourierTransform` / `InverseFourierTransform`.
 - **Propagation** — Angular Spectrum Method (`ASMPropagator`), Rayleigh–Sommerfeld (`RSPropagator`), and k-space transfer function (`KSpacePropagator`). `plan_propagation()` is the recommended high-level entry point: it selects the propagator, plans the working grid, and precomputes reusable diagonal transfer data for ASM and k-space propagation.
 - **Modulation layers** — `PhaseMask`, `AmplitudeMask`, `ComplexMask`, `ThinLens`, plus k-space equivalents (`KSpacePhaseMask`, `KSpaceAmplitudeMask`, `KSpaceComplexMask`).
 - **Jones polarization** — full 2×2 Jones matrix layers (`JonesMatrixLayer`, `KJonesMatrixLayer`) and per-channel field diagnostics.
 - **Meta-atom libraries** — wavelength- and geometry-parameterized lookup tables with multilinear interpolation (`MetaAtomLibrary`, `MetaAtomInterpolationLayer`).
-- **Incoherent imaging** — shift-invariant PSF/OTF filtering via `IncoherentImager`.
+- **Incoherent imaging** — explicit `Intensity` data model and shift-invariant PSF/OTF filtering via `IncoherentImager`.
 - **Detectors** — `Detector` for region-integrated intensity readout and `DetectorArray` for grid readout with optional noise.
 - **NA planning** — numerical-aperture schedule utilities for multi-segment systems.
 - **End-to-end differentiable** — every layer traces through JAX for gradient-based optimization with Optax.

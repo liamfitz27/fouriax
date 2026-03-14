@@ -56,6 +56,19 @@ Operations:
 - `apply_phase()`, `apply_amplitude()`
 - `to_kspace()`, `to_spatial()` for explicit FFT/IFFT conversion
 
+### `Intensity`
+
+`Intensity` is the tensor passed between incoherent layers and sensors:
+
+- `data`: real array `(*batch, num_wavelengths, ny, nx)`
+- `grid`: `Grid`
+- `spectrum`: `Spectrum`
+
+Operations:
+
+- `power()`
+- `sum_wavelengths()`
+
 ## Interfaces
 
 ### `OpticalLayer`
@@ -64,6 +77,14 @@ Abstract base class for field-to-field transforms:
 
 - `forward(field) -> Field`
 - `validate_for(field)`
+- `parameters() -> dict[str, jnp.ndarray]`
+
+### `IncoherentLayer`
+
+Abstract base class for intensity-to-intensity transforms:
+
+- `forward(intensity) -> Intensity`
+- `validate_for(intensity)`
 - `parameters() -> dict[str, jnp.ndarray]`
 
 ### `Sensor`
@@ -85,6 +106,8 @@ Execution methods:
 - `measure(field) -> jnp.ndarray`
 - `trace(field, include_input=True) -> list[Field]`
 - `parameters()`
+
+`OpticalModule.forward(...)` remains `Field -> Field`. The optional sensor is an attached terminal readout used by `measure(...)`; it is not part of the coherent layer composition itself.
 
 `OpticalModule` is a thin sequential executor. It does not perform NA planning, domain inference, or propagation-method resolution.
 
@@ -144,10 +167,26 @@ These require `field.domain == "kspace"`.
 
 `IncoherentImager` models shift-invariant incoherent imaging by:
 
-1. generating a coherent calibration source (`impulse` or `plane_wave_focus`)
+1. generating a coherent calibration source (`impulse`, `plane_wave_focus`, or `point_source`)
 2. propagating through `optical_layer` and `propagator`
 3. constructing PSF from output intensity
 4. applying PSF/OTF filtering to input intensity
+
+It implements `IncoherentLayer`, not `OpticalLayer`:
+
+- `build_psf(field_template: Field) -> Intensity`
+- `forward(intensity: Intensity) -> Intensity`
+- `for_far_field(...)` for plane-wave calibration at the sensor/image distance
+- `for_finite_distance(...)` for point-source calibration with explicit object and image distances
+- `infer_from_paraxial_limit(sensor_grid, paraxial_max_angle_rad) -> Grid`
+  for same-shape input-grid planning from a detector grid
+
+`infer_from_paraxial_limit(...)` is a planning helper. It does not change
+`forward(...)` semantics. For finite-distance imagers it returns an object-plane
+grid scaled by magnification; for far-field imagers it returns an image-
+equivalent input grid with the same pitch as the sensor grid. Pair the inferred
+input grid with `DetectorArray(detector_grid=...)` when you want distinct input
+and detector coordinate metadata in a same-shape simulation.
 
 Modes:
 
@@ -221,16 +260,19 @@ Supporting utilities:
 
 Implemented in `sensors.py`.
 
-- `IntensitySensor`
-  - computes intensity, optional wavelength sum
-  - optional detector integration via `detector_masks`
-  - optional `channel_resolved=True` for Jones per-channel intensity output
+- `Detector`
+  - integrates intensity over one masked region
+  - accepts either `Field` or `Intensity`
+  - preserves Jones per-channel output only when given a Jones `Field` with `channel_resolved=True`
 
-- `FieldReadout`
-  - returns `"complex"`, `"real_imag"`, or `"amplitude_phase"` representations
-  - preserves Jones channel axis when present
+- `DetectorArray`
+  - integrates onto a detector grid with optional QE weighting, filter mask, and noise
+  - accepts either `Field` or `Intensity`
+  - `resample_method="linear"` uses conservative pixel-overlap redistribution
+    when source and detector grids differ
+  - `resample_method="nearest"` keeps nearest-bin accumulation semantics
 
-Current sensor behavior converts inputs to spatial domain internally (`field.to_spatial()`).
+Current detector behavior converts `Field` inputs via `Field.to_intensity()` and consumes `Intensity` inputs directly.
 
 ## Meta-Atom Layers
 
