@@ -1,5 +1,6 @@
 """Core optics data models."""
 
+from fouriax.linop import LinearOperator
 from fouriax.optics.interfaces import IncoherentLayer, Monitor, OpticalLayer, Sensor
 from fouriax.optics.layers import (
     AmplitudeMask,
@@ -47,6 +48,7 @@ from fouriax.optics.propagation import (
 from fouriax.optics.sensors import Detector, DetectorArray
 
 __all__ = [
+    "LinearOperator",
     "Field",
     "Intensity",
     "Grid",
