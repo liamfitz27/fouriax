@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
 
 from fouriax.fft import fftconvolve, fftconvolve_same_with_otf
+from fouriax.linop import LinearOperator
 from fouriax.optics.interfaces import IncoherentLayer, Monitor, OpticalLayer, Sensor
 from fouriax.optics.model import Field, Grid, Intensity
 
@@ -1037,68 +1038,259 @@ class IncoherentImager(IncoherentLayer):
             dtype=jnp.result_type(intensity.data.dtype, 1j),
         )
         psf = _expand_psf_for_intensity(self.build_psf(template))
-
-        if self.mode not in ("psf", "otf", "auto"):
-            raise ValueError("mode must be one of: psf, otf, auto")
-        resolved_mode = self.mode
-        if resolved_mode == "auto":
-            # FFT-domain imaging becomes favorable for larger kernels/grids.
-            resolved_mode = (
-                "otf"
-                if (intensity.grid.nx * intensity.grid.ny) >= 4096
-                else "psf"
-            )
-
-        batch_shape = intensity.batch_shape
-        flat_batch = math.prod(batch_shape) if batch_shape else 1
-        flat_intensity = intensity.data.reshape(
-            (flat_batch, intensity.spectrum.size, intensity.grid.ny, intensity.grid.nx)
-        )
-        outputs: list[jnp.ndarray] = []
-        if resolved_mode == "otf":
-            ky, kx = intensity.grid.ny, intensity.grid.nx
-            full_shape = (2 * ky - 1, 2 * kx - 1)
-            otf = jnp.stack(
-                [
-                    jnp.fft.fftn(
-                        psf[0] if psf.shape[0] == 1 else psf[i],
-                        s=full_shape,
-                        axes=(-2, -1),
-                    )
-                    for i in range(intensity.spectrum.size)
-                ],
-                axis=0,
-            )
-            for i in range(intensity.spectrum.size):
-                outputs.append(
-                    fftconvolve_same_with_otf(
-                        flat_intensity[:, i],
-                        otf[i],
-                        kernel_shape=(ky, kx),
-                    )
-                )
-        else:
-            for i in range(intensity.spectrum.size):
-                psf_i = psf[0] if psf.shape[0] == 1 else psf[i]
-                outputs.append(
-                    fftconvolve(flat_intensity[:, i], psf_i, mode="same", axes=(-2, -1))
-                )
-
-        image = jnp.stack(outputs, axis=1).reshape(
-            (
-                *batch_shape,
-                intensity.spectrum.size,
-                intensity.grid.ny,
-                intensity.grid.nx,
-            )
-        )
+        image = self._apply_conv(
+            intensity.data,
+            psf,
+            mode=self.mode,
+            adjoint=False,
+            conv_grid=intensity.grid,
+        ).astype(intensity.data.dtype)
         image_out = Intensity(
-            data=image.astype(intensity.data.dtype),
+            data=image,
             grid=intensity.grid,
             spectrum=intensity.spectrum,
         )
         image_out.validate()
         return image_out
+
+    @staticmethod
+    def _apply_conv(
+        x: jax.Array,
+        psf: jax.Array,
+        *,
+        mode: Literal["psf", "otf", "auto"] = "auto",
+        adjoint: bool = False,
+        conv_grid: Grid | None = None,
+    ) -> jax.Array:
+        """Apply the shared incoherent convolution backend.
+
+        ``x`` is expected to have trailing shape ``(num_wavelengths, ny, nx)`` and optional
+        leading batch axes. ``psf`` is expected to have shape ``(1|num_wavelengths, ny, nx)``.
+        """
+        if mode not in ("psf", "otf", "auto"):
+            raise ValueError("mode must be one of: psf, otf, auto")
+        if x.ndim < 3:
+            raise ValueError(
+                "incoherent convolution input must have shape (*batch, num_wavelengths, ny, nx)"
+            )
+        if psf.ndim != 3:
+            raise ValueError("psf must have shape (1|num_wavelengths, ny, nx)")
+
+        num_wavelengths, ny, nx = x.shape[-3:]
+        if conv_grid is not None and (conv_grid.ny, conv_grid.nx) != (ny, nx):
+            raise ValueError(
+                "conv_grid shape mismatch: got "
+                f"{(conv_grid.ny, conv_grid.nx)}, expected {(ny, nx)}"
+            )
+        if psf.shape[-2:] != (ny, nx):
+            raise ValueError(
+                f"psf spatial shape mismatch: got {psf.shape[-2:]}, expected {(ny, nx)}"
+            )
+        if psf.shape[0] not in (1, num_wavelengths):
+            raise ValueError(
+                f"psf wavelength axis mismatch: got {psf.shape[0]}, expected 1 or {num_wavelengths}"
+            )
+
+        resolved_mode = mode
+        if resolved_mode == "auto":
+            resolved_mode = "otf" if (nx * ny) >= 4096 else "psf"
+
+        batch_shape = x.shape[:-3]
+        flat_batch = math.prod(batch_shape) if batch_shape else 1
+        flat_x = x.reshape((flat_batch, num_wavelengths, ny, nx))
+
+        outputs: list[jax.Array] = []
+        if resolved_mode == "otf":
+            full_shape = (2 * ny - 1, 2 * nx - 1)
+            kernels = [
+                psf[0] if psf.shape[0] == 1 else psf[i]
+                for i in range(num_wavelengths)
+            ]
+            if adjoint:
+                kernels = [jnp.conj(kernel[::-1, ::-1]) for kernel in kernels]
+            otf = jnp.stack(
+                [
+                    jnp.fft.fftn(
+                        kernels[i],
+                        s=full_shape,
+                        axes=(-2, -1),
+                    )
+                    for i in range(num_wavelengths)
+                ],
+                axis=0,
+            )
+            for i in range(num_wavelengths):
+                outputs.append(
+                    fftconvolve_same_with_otf(
+                        flat_x[:, i],
+                        otf[i],
+                        kernel_shape=(ny, nx),
+                    )
+                )
+        else:
+            for i in range(num_wavelengths):
+                kernel = psf[0] if psf.shape[0] == 1 else psf[i]
+                if adjoint:
+                    kernel = jnp.conj(kernel[::-1, ::-1])
+                outputs.append(
+                    fftconvolve(
+                        flat_x[:, i],
+                        kernel,
+                        mode="same",
+                        axes=(-2, -1),
+                    )
+                )
+
+        return jnp.stack(outputs, axis=1).reshape((*batch_shape, num_wavelengths, ny, nx))
+
+    def linear_operator(
+        self,
+        template: Intensity,
+        *,
+        cache: Literal["psf", "otf", "auto"] = "auto",
+        flatten: bool = False,
+        conv_grid: Grid | None = None,
+    ) -> LinearOperator:
+        """Construct a cached linear operator for this imager on ``template``."""
+        self.validate_for(template)
+        if template.data.ndim != 3:
+            raise ValueError(
+                "linear_operator currently requires an unbatched template intensity with shape "
+                "(num_wavelengths, ny, nx)"
+            )
+        template_field = Field.zeros(
+            grid=template.grid,
+            spectrum=template.spectrum,
+            dtype=jnp.result_type(template.data.dtype, 1j),
+        )
+        psf = self.build_psf(template_field)
+        target_grid = template.grid if conv_grid is None else conv_grid
+        if conv_grid is not None:
+            # Reuse detector-array readout semantics to map a high-resolution PSF onto
+            # the requested convolution grid before building the operator.
+            from fouriax.optics.sensors import DetectorArray
+
+            detector = DetectorArray(
+                detector_grid=conv_grid,
+                qe_curve=1.0,
+                sum_wavelengths=False,
+                resample_method="linear",
+            )
+            detector_op = detector.linear_operator(template, flatten=False)
+            psf = Intensity(
+                data=detector_op.matvec(psf.data).astype(template.data.dtype),
+                grid=conv_grid,
+                spectrum=psf.spectrum,
+            )
+        psf_array = _expand_psf_for_intensity(psf)
+        tensor_shape: tuple[int, int, int] = (
+            template.spectrum.size,
+            target_grid.ny,
+            target_grid.nx,
+        )
+        num_wavelengths, ny, nx = tensor_shape
+        resolved_cache = cache
+        if resolved_cache == "auto":
+            resolved_cache = "otf" if (nx * ny) >= 4096 else "psf"
+
+        kernel_stack = jnp.stack(
+            [
+                psf_array[0] if psf_array.shape[0] == 1 else psf_array[i]
+                for i in range(num_wavelengths)
+            ],
+            axis=0,
+        )
+
+        def apply_cached_kernels(x: jax.Array, kernels: jax.Array) -> jax.Array:
+            batch_shape = x.shape[:-3]
+            flat_batch = math.prod(batch_shape) if batch_shape else 1
+            flat_x = x.reshape((flat_batch, num_wavelengths, ny, nx))
+            out = jax.vmap(
+                lambda xi, kernel: fftconvolve(
+                    xi,
+                    kernel,
+                    mode="same",
+                    axes=(-2, -1),
+                ),
+                in_axes=(1, 0),
+                out_axes=1,
+            )(flat_x, kernels)
+            return cast(jax.Array, out.reshape((*batch_shape, num_wavelengths, ny, nx)))
+
+        def apply_cached_otf(x: jax.Array, otf_stack: jax.Array) -> jax.Array:
+            batch_shape = x.shape[:-3]
+            flat_batch = math.prod(batch_shape) if batch_shape else 1
+            flat_x = x.reshape((flat_batch, num_wavelengths, ny, nx))
+            out = jax.vmap(
+                lambda xi, otf: fftconvolve_same_with_otf(
+                    xi,
+                    otf,
+                    kernel_shape=(ny, nx),
+                ),
+                in_axes=(1, 0),
+                out_axes=1,
+            )(flat_x, otf_stack)
+            return cast(jax.Array, out.reshape((*batch_shape, num_wavelengths, ny, nx)))
+
+        if resolved_cache == "otf":
+            full_shape = (2 * ny - 1, 2 * nx - 1)
+            forward_otf = jax.vmap(
+                lambda kernel: jnp.fft.fftn(kernel, s=full_shape, axes=(-2, -1))
+            )(kernel_stack)
+            adjoint_otf = jax.vmap(
+                lambda kernel: jnp.fft.fftn(
+                    jnp.conj(kernel[::-1, ::-1]),
+                    s=full_shape,
+                    axes=(-2, -1),
+                )
+            )(kernel_stack)
+        else:
+            forward_kernels = kernel_stack
+            adjoint_kernels = jnp.conj(kernel_stack[:, ::-1, ::-1])
+
+        in_shape: tuple[int, ...]
+        out_shape: tuple[int, ...]
+        if flatten:
+            in_shape = (math.prod(tensor_shape),)
+            out_shape = in_shape
+
+            def matvec_fn(x: jax.Array) -> jax.Array:
+                x_tensor = x.reshape(tensor_shape)
+                if resolved_cache == "otf":
+                    out = apply_cached_otf(x_tensor, forward_otf)
+                else:
+                    out = apply_cached_kernels(x_tensor, forward_kernels)
+                return out.reshape(out_shape)
+
+            def rmatvec_fn(y: jax.Array) -> jax.Array:
+                y_tensor = y.reshape(tensor_shape)
+                if resolved_cache == "otf":
+                    out = apply_cached_otf(y_tensor, adjoint_otf)
+                else:
+                    out = apply_cached_kernels(y_tensor, adjoint_kernels)
+                return out.reshape(in_shape)
+        else:
+            in_shape = tensor_shape
+            out_shape = tensor_shape
+
+            def matvec_fn(x: jax.Array) -> jax.Array:
+                if resolved_cache == "otf":
+                    return apply_cached_otf(x, forward_otf)
+                return apply_cached_kernels(x, forward_kernels)
+
+            def rmatvec_fn(y: jax.Array) -> jax.Array:
+                if resolved_cache == "otf":
+                    return apply_cached_otf(y, adjoint_otf)
+                return apply_cached_kernels(y, adjoint_kernels)
+
+        return LinearOperator(
+            in_shape=in_shape,
+            out_shape=out_shape,
+            in_dtype=template.data.dtype,
+            out_dtype=template.data.dtype,
+            matvec_fn=matvec_fn,
+            rmatvec_fn=rmatvec_fn,
+        )
 
     def parameters(self) -> dict[str, jnp.ndarray]:
         """Return imager parameters together with nested optical-layer parameters."""

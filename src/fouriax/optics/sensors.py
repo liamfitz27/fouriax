@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
 import jax
 import jax.numpy as jnp
 
+from fouriax.linop import LinearOperator
 from fouriax.optics.interfaces import Sensor
 from fouriax.optics.layers import AmplitudeMask
 from fouriax.optics.model import Field, Grid, Intensity
@@ -195,7 +197,33 @@ class DetectorArray(Sensor):
             spectrum_size = field.spectrum.size
             dtype = field.data.dtype
 
-        intensity_det = self._integrate_intensity(intensity, grid)
+        return self._apply_readout(
+            intensity,
+            field_grid=grid,
+            spectrum_size=spectrum_size,
+            dtype=dtype,
+            channel_resolved=channel_resolved,
+        )
+
+    def sample(self, field: Field | Intensity, *, key: jax.Array) -> jnp.ndarray:
+        """Sample the detector-array output with the configured noise model."""
+        return _apply_optional_noise(
+            self.expected(field),
+            noise_model=self.noise_model,
+            key=key,
+        )
+
+    def _apply_readout(
+        self,
+        intensity: jnp.ndarray,
+        *,
+        field_grid: Grid,
+        spectrum_size: int,
+        dtype: jnp.dtype,
+        channel_resolved: bool,
+    ) -> jnp.ndarray:
+        """Apply deterministic detector readout to intensity data."""
+        intensity_det = self._integrate_intensity(intensity, field_grid)
         weight = self._detector_intensity_weight(
             spectrum_size=spectrum_size,
             dtype=dtype,
@@ -212,12 +240,84 @@ class DetectorArray(Sensor):
             else intensity_det
         )
 
-    def sample(self, field: Field | Intensity, *, key: jax.Array) -> jnp.ndarray:
-        """Sample the detector-array output with the configured noise model."""
-        return _apply_optional_noise(
-            self.expected(field),
-            noise_model=self.noise_model,
-            key=key,
+    def linear_operator(
+        self,
+        template: Intensity,
+        *,
+        flatten: bool = False,
+    ) -> LinearOperator:
+        """Return the deterministic intensity-readout operator for this detector.
+
+        The operator corresponds to :meth:`expected` on ``Intensity`` input and
+        does not include stochastic noise sampling.
+        """
+        self.validate_for(template)
+        if template.data.ndim != 3:
+            raise ValueError(
+                "linear_operator currently requires an unbatched template intensity with shape "
+                "(num_wavelengths, ny, nx)"
+            )
+
+        in_tensor_shape: tuple[int, int, int] = (
+            template.spectrum.size,
+            template.grid.ny,
+            template.grid.nx,
+        )
+        out_tensor_shape: tuple[int, ...]
+        if self.sum_wavelengths:
+            out_tensor_shape = (self.detector_grid.ny, self.detector_grid.nx)
+        else:
+            out_tensor_shape = (
+                template.spectrum.size,
+                self.detector_grid.ny,
+                self.detector_grid.nx,
+            )
+
+        def _forward_tensor(x: jax.Array) -> jax.Array:
+            return self._apply_readout(
+                x,
+                field_grid=template.grid,
+                spectrum_size=template.spectrum.size,
+                dtype=template.data.dtype,
+                channel_resolved=False,
+            )
+
+        in_shape: tuple[int, ...]
+        out_shape: tuple[int, ...]
+        if flatten:
+            in_shape = (math.prod(in_tensor_shape),)
+            out_shape = (math.prod(out_tensor_shape),)
+
+            def matvec_fn(x: jax.Array) -> jax.Array:
+                return _forward_tensor(x.reshape(in_tensor_shape)).reshape(out_shape)
+
+            def rmatvec_fn(y: jax.Array) -> jax.Array:
+                (out,) = jax.linear_transpose(
+                    _forward_tensor,
+                    jnp.zeros(in_tensor_shape, dtype=template.data.dtype),
+                )(y.reshape(out_tensor_shape))
+                return jnp.asarray(out, dtype=template.data.dtype).reshape(in_shape)
+        else:
+            in_shape = in_tensor_shape
+            out_shape = out_tensor_shape
+
+            def matvec_fn(x: jax.Array) -> jax.Array:
+                return _forward_tensor(x)
+
+            def rmatvec_fn(y: jax.Array) -> jax.Array:
+                (out,) = jax.linear_transpose(
+                    _forward_tensor,
+                    jnp.zeros(in_tensor_shape, dtype=template.data.dtype),
+                )(y)
+                return jnp.asarray(out, dtype=template.data.dtype)
+
+        return LinearOperator(
+            in_shape=in_shape,
+            out_shape=out_shape,
+            in_dtype=template.data.dtype,
+            out_dtype=template.data.dtype,
+            matvec_fn=matvec_fn,
+            rmatvec_fn=rmatvec_fn,
         )
 
     def _integrate_intensity(self, intensity: jnp.ndarray, field_grid: Grid) -> jnp.ndarray:

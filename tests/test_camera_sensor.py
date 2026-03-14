@@ -155,6 +155,82 @@ def test_detector_array_accepts_explicit_intensity_input():
     np.testing.assert_allclose(np.asarray(from_intensity), np.asarray(from_field), atol=1e-6)
 
 
+def test_detector_array_linear_operator_matches_expected():
+    src_grid = Grid.from_extent(nx=2, ny=2, dx_um=2.0, dy_um=2.0)
+    spectrum = Spectrum.from_array(jnp.array([0.532, 0.633], dtype=jnp.float32))
+    intensity = Intensity(
+        data=jnp.asarray(
+            [
+                [[1.0, 2.0], [3.0, 4.0]],
+                [[0.5, 1.5], [2.5, 3.5]],
+            ],
+            dtype=jnp.float32,
+        ),
+        grid=src_grid,
+        spectrum=spectrum,
+    )
+    sensor = DetectorArray(
+        detector_grid=Grid.from_extent(nx=4, ny=4, dx_um=1.0, dy_um=1.0),
+        qe_curve=jnp.array([0.5, 1.0], dtype=jnp.float32),
+        sum_wavelengths=False,
+        resample_method="linear",
+    )
+
+    op = sensor.linear_operator(intensity, flatten=False)
+    measured = sensor.expected(intensity)
+    np.testing.assert_allclose(
+        np.asarray(op.matvec(intensity.data)),
+        np.asarray(measured),
+        atol=1e-6,
+    )
+
+
+def test_detector_array_linear_operator_adjoint_and_flatten():
+    src_grid = Grid.from_extent(nx=3, ny=2, dx_um=1.0, dy_um=1.0)
+    spectrum = Spectrum.from_array(jnp.array([0.532, 0.633], dtype=jnp.float32))
+    template = Intensity(
+        data=jnp.ones((spectrum.size, src_grid.ny, src_grid.nx), dtype=jnp.float32),
+        grid=src_grid,
+        spectrum=spectrum,
+    )
+    sensor = DetectorArray(
+        detector_grid=Grid.from_extent(nx=2, ny=2, dx_um=1.5, dy_um=1.0),
+        qe_curve=jnp.array([0.8, 0.6], dtype=jnp.float32),
+        sum_wavelengths=True,
+        resample_method="linear",
+    )
+
+    op = sensor.linear_operator(template, flatten=False)
+    x = jnp.linspace(
+        0.0,
+        1.0,
+        spectrum.size * src_grid.ny * src_grid.nx,
+        dtype=jnp.float32,
+    ).reshape((spectrum.size, src_grid.ny, src_grid.nx))
+    y = jnp.linspace(
+        1.0,
+        2.0,
+        sensor.detector_grid.ny * sensor.detector_grid.nx,
+        dtype=jnp.float32,
+    ).reshape((sensor.detector_grid.ny, sensor.detector_grid.nx))
+
+    lhs = jnp.vdot(op.matvec(x), y)
+    rhs = jnp.vdot(x, op.rmatvec(y))
+    np.testing.assert_allclose(np.asarray(lhs), np.asarray(rhs), atol=1e-6, rtol=1e-6)
+
+    op_flat = sensor.linear_operator(template, flatten=True)
+    np.testing.assert_allclose(
+        np.asarray(op_flat.matvec(x.reshape(-1)).reshape(op.out_shape)),
+        np.asarray(op.matvec(x)),
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.asarray(op_flat.rmatvec(y.reshape(-1)).reshape(op.in_shape)),
+        np.asarray(op.rmatvec(y)),
+        atol=1e-6,
+    )
+
+
 def test_detector_array_rejects_complex_intensity_input():
     field = _two_wavelength_field()
     bad = Intensity(

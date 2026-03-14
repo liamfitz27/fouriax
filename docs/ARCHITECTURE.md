@@ -176,6 +176,7 @@ It implements `IncoherentLayer`, not `OpticalLayer`:
 
 - `build_psf(field_template: Field) -> Intensity`
 - `forward(intensity: Intensity) -> Intensity`
+- `linear_operator(template: Intensity, cache="auto", flatten=False, conv_grid=None) -> LinearOperator`
 - `for_far_field(...)` for plane-wave calibration at the sensor/image distance
 - `for_finite_distance(...)` for point-source calibration with explicit object and image distances
 - `infer_from_paraxial_limit(sensor_grid, paraxial_max_angle_rad) -> Grid`
@@ -191,6 +192,7 @@ and detector coordinate metadata in a same-shape simulation.
 Modes:
 
 - `mode="psf"`, `mode="otf"`, or `mode="auto"`
+- linear-operator cache `cache="psf"`, `cache="otf"`, or `cache="auto"`
 
 Normalization controls:
 
@@ -268,6 +270,8 @@ Implemented in `sensors.py`.
 - `DetectorArray`
   - integrates onto a detector grid with optional QE weighting, filter mask, and noise
   - accepts either `Field` or `Intensity`
+  - `linear_operator(template, flatten=False)` exposes the deterministic
+    `Intensity -> expected readout` map for fixed source and detector grids
   - `resample_method="linear"` uses conservative pixel-overlap redistribution
     when source and detector grids differ
   - `resample_method="nearest"` keeps nearest-bin accumulation semantics

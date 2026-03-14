@@ -2,6 +2,7 @@
 
 from fouriax import analysis, optim, utils
 from fouriax.fft import fftconvolve
+from fouriax.linop import LinearOperator
 from fouriax.optics import (
     AmplitudeMask,
     ASMPropagator,
@@ -55,6 +56,7 @@ __all__ = [
     "analysis",
     "optim",
     "utils",
+    "LinearOperator",
     "fftconvolve",
     "Grid",
     "Spectrum",
