@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train-samples", type=int, default=4096)
     parser.add_argument("--val-samples", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--optical-lr", type=float, default=5e-2)
     parser.add_argument("--decoder-lr", type=float, default=1e-3)

@@ -4,9 +4,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
-artifacts/
 examples/artifacts/
-experiments/artifacts/
 docs/_build/
 docs/api/generated/
 docs/examples/notebooks/
@@ -22,4 +20,3 @@ experiments/data/*
 !experiments/data/meta_atoms/**
 !experiments/data/cartoonset_downloader.py
 !experiments/data/process_cartoon_faces.py
-experiments/jobs/outputs/

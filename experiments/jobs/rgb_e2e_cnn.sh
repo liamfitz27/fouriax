@@ -10,19 +10,10 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 
-set -euo pipefail
-
-ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-cd "$ROOT_DIR"
-
-mkdir -p experiments/jobs/outputs
-
 module load StdEnv/2023
 module load python/3.12.4
 module load cuda/12.9
 
 source .venv/bin/activate
 
-export PYTHONPATH="$ROOT_DIR/src:$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
-
-srun python -u experiments/rgb_e2e_cnn.py "$@"
+srun python -u experiments/rgb_e2e_cnn.py

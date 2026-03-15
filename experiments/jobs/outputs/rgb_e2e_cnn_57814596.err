@@ -1,0 +1,37 @@
+/lustre06/project/6102186/liamfitz/fouriax/src/fouriax/optics/propagation.py:1032: UserWarning: ASM selected outside recommended regime (distance_um=500.000, z_crit_um=111.502, recommended='rs'). Planning will continue with ASM as requested.
+  _warn_if_explicit_mode_mismatch("asm")
+W0315 11:18:03.205087 2230289 hlo_rematerialization.cc:3204] Can't reduce memory use below 30.00GiB (32212731822 bytes) by rematerialization; only reduced to 32.58GiB (34982592544 bytes), down from 32.58GiB (34982592544 bytes) originally
+W0315 11:18:13.350576 2230210 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 32.57GiB (rounded to 34974204416)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0315 11:18:13.350854 2230210 bfc_allocator.cc:513] *___________________________________________________________________________________________________
+W0315 11:18:38.466275 2230292 hlo_rematerialization.cc:3204] Can't reduce memory use below 28.12GiB (30189609288 bytes) by rematerialization; only reduced to 33.51GiB (35979788320 bytes), down from 33.51GiB (35979788320 bytes) originally
+W0315 11:18:50.400762 2230210 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 33.50GiB (rounded to 35970351616)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0315 11:18:50.401060 2230210 bfc_allocator.cc:513] ********____________________________________________________________________________________________
+W0315 11:18:50.423202 2230291 hlo_rematerialization.cc:3204] Can't reduce memory use below 29.11GiB (31253911982 bytes) by rematerialization; only reduced to 41.63GiB (44703940640 bytes), down from 41.63GiB (44703940640 bytes) originally
+W0315 11:19:01.970504 2230210 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 40.63GiB (rounded to 43630199296)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0315 11:19:01.970764 2230210 bfc_allocator.cc:513] ************________________________________________________________________________________________
+W0315 11:19:50.706006 2230291 hlo_rematerialization.cc:3204] Can't reduce memory use below 29.11GiB (31253913928 bytes) by rematerialization; only reduced to 41.63GiB (44703940640 bytes), down from 41.63GiB (44703940640 bytes) originally
+W0315 11:20:02.503431 2230210 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 40.63GiB (rounded to 43630199296)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0315 11:20:02.503908 2230210 bfc_allocator.cc:513] **********************______________________________________________________________________________
+W0315 11:20:14.036619 2230210 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 24.38GiB (rounded to 26177176064)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0315 11:20:14.037049 2230210 bfc_allocator.cc:513] *************************___________________________________________________________________________
+W0315 11:26:40.639986 2230293 hlo_rematerialization.cc:3204] Can't reduce memory use below 29.98GiB (32190082580 bytes) by rematerialization; only reduced to 32.79GiB (35212230688 bytes), down from 32.79GiB (35212230688 bytes) originally
+W0315 11:26:50.811843 2230210 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 32.76GiB (rounded to 35178676736)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0315 11:26:50.812053 2230210 bfc_allocator.cc:513] *______*****_____********___________________________________________________________________________
