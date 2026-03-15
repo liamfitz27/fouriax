@@ -9,7 +9,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --array=0-9
 
 set -euo pipefail
 
@@ -27,10 +26,11 @@ source .venv/bin/activate
 export PYTHONPATH="$ROOT_DIR/src:$ROOT_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 DISTANCES=(100 200 300 400 500 600 700 800 900 1000)
-DISTANCE_UM="${DISTANCES[$SLURM_ARRAY_TASK_ID]}"
-ARTIFACTS_DIR="$ROOT_DIR/experiments/artifacts/rgb_e2e_cnn_distance_${DISTANCE_UM}"
 
-srun python -u experiments/rgb_e2e_cnn.py \
-  --distance-um "$DISTANCE_UM" \
-  --artifacts-dir "$ARTIFACTS_DIR" \
-  "$@"
+for DISTANCE_UM in "${DISTANCES[@]}"; do
+  ARTIFACTS_DIR="$ROOT_DIR/experiments/artifacts/rgb_e2e_cnn_distance_${DISTANCE_UM}"
+  srun python -u experiments/rgb_e2e_cnn.py \
+    --distance-um "$DISTANCE_UM" \
+    --artifacts-dir "$ARTIFACTS_DIR" \
+    "$@"
+done
