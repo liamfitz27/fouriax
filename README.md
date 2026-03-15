@@ -84,7 +84,9 @@ you specifically need manual low-level control.
 
 ## Examples
 
-Scripts live in `examples/scripts/` with matching notebooks in `examples/notebooks/`.
+Most tutorial source scripts live in `examples/scripts/` with matching notebooks in
+`examples/notebooks/`. The spectral filter optimization source lives in
+`experiments/spectral_filter_optimization.py` and syncs to the same notebook set.
 
 Recommended example order:
 
@@ -138,7 +140,7 @@ Suggested progression:
 | Incoherent Camera | [`incoherent_camera.py`](examples/scripts/incoherent_camera.py) | [`incoherent_camera.ipynb`](examples/notebooks/incoherent_camera.ipynb) | Shift-invariant incoherent imaging simulation |
 | Meta-Atom Optimization | [`metaatom_optimization.py`](examples/scripts/metaatom_optimization.py) | [`metaatom_optimization.ipynb`](examples/notebooks/metaatom_optimization.ipynb) | Optimize meta-atom geometries for focusing |
 | ONN MNIST | [`onn_mnist.py`](examples/scripts/onn_mnist.py) | [`onn_mnist.ipynb`](examples/notebooks/onn_mnist.ipynb) | Optical neural network for MNIST classification |
-| Spectral Filter | [`spectral_filter_optimization.py`](examples/scripts/spectral_filter_optimization.py) | [`spectral_filter_optimization.ipynb`](examples/notebooks/spectral_filter_optimization.ipynb) | Multi-wavelength spectral filter design |
+| Spectral Filter | [`spectral_filter_optimization.py`](experiments/spectral_filter_optimization.py) | [`spectral_filter_optimization.ipynb`](examples/notebooks/spectral_filter_optimization.ipynb) | Multi-wavelength spectral filter design |
 
 ## Project Structure
 

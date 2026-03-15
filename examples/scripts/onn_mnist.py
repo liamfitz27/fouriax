@@ -17,12 +17,19 @@ from matplotlib.patches import Rectangle
 
 import fouriax as fx
 
+try:
+    EXAMPLES_ROOT = Path(__file__).resolve().parents[1]
+except NameError:
+    EXAMPLES_ROOT = fx.utils.find_repo_root(Path.cwd()) / "examples"
+EXAMPLES_DATA_DIR = EXAMPLES_ROOT / "data"
+EXAMPLES_ARTIFACTS_DIR = EXAMPLES_ROOT / "artifacts"
+
 # %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ONN MNIST Example")
-    parser.add_argument("--data-path", type=str, default="data/mnist.npz")
-    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--data-path", type=str, default=str(EXAMPLES_DATA_DIR / "mnist.npz"))
+    parser.add_argument("--artifacts-dir", type=str, default=str(EXAMPLES_ARTIFACTS_DIR))
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--epochs", type=int, default=10)
@@ -40,10 +47,10 @@ def parse_args() -> argparse.Namespace:
 
 ARGS = parse_args()
 
+# Keep the MNIST cache under examples/data by default.
 MNIST_URL = "https://storage.googleapis.com/tensorflow/tf-keras-datasets/mnist.npz"
+DATA_PATH = Path(ARGS.data_path)
 ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
-DATA_DIR = ARTIFACTS_DIR / "data"
-MNIST_CACHE_PATH = DATA_DIR / "mnist.npz"
 PLOT_PATH = ARTIFACTS_DIR / "onn_mnist_field_evolution.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "onn_mnist_summary.json"
 
@@ -139,7 +146,7 @@ def main() -> None:
             layers.append(fx.IntensityMonitor(sum_wavelengths=True, output_domain="spatial"))
         return fx.OpticalModule(layers=tuple(layers), sensor=detector_array)
 
-    x_train, y_train, x_test, y_test = load_mnist(MNIST_CACHE_PATH)
+    x_train, y_train, x_test, y_test = load_mnist(DATA_PATH)
     x_train = x_train[:TRAIN_SAMPLES]
     y_train = y_train[:TRAIN_SAMPLES]
     x_test = x_test[:TEST_SAMPLES]

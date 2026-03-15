@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+import time
+from collections.abc import Iterable, Mapping, Sized
 from dataclasses import dataclass, field
 from typing import Any, Callable, Generic, Literal, TypeVar, cast
 
@@ -152,27 +153,64 @@ def _as_batch_arrays(data: Any, *, name: str) -> tuple[Any, ...]:
     return arrays
 
 
+def _format_seconds(seconds: float | None) -> str:
+    if seconds is None:
+        return "n/a"
+    return f"{seconds:.2f}s"
+
+
+def _format_progress(current: int, total: int | None, *, min_width: int = 3) -> str:
+    if total is None:
+        return f"{current:0{min_width}d}"
+    width = max(min_width, len(str(total)))
+    return f"{current:0{width}d}/{total:0{width}d}"
+
+
 def _uniform_dataset_report(payload: dict[str, Any]) -> None:
     """Default console reporting format used by dataset optimizers."""
+    kind = str(payload.get("kind", "validation"))
     epoch = int(payload.get("epoch", -1)) + 1
-    step = int(payload.get("step", -1))
+    total_epochs = payload.get("total_epochs", None)
+    epoch_part = (
+        f"epoch={epoch:03d}/{int(total_epochs):03d}"
+        if total_epochs is not None
+        else f"epoch={epoch:03d}"
+    )
+    elapsed_part = f" elapsed={_format_seconds(payload.get('elapsed_s', None))}"
+    if kind == "epoch_start":
+        num_batches = payload.get("num_batches", None)
+        batches_part = f" batches={int(num_batches)}" if num_batches is not None else ""
+        print(f"{epoch_part}{batches_part}{elapsed_part}")
+        return
+
     train_loss = payload.get("train_loss", None)
     train_part = (
         f" train_loss={float(train_loss):.6f}"
         if train_loss is not None
         else ""
     )
-    if "val" not in payload:
-        print(f"epoch={epoch:03d} step={step:05d}{train_part}")
+    batch_time_part = f" batch_time={_format_seconds(payload.get('batch_time_s', None))}"
+    if kind == "batch_progress":
+        batch_index = int(payload.get("batch_index", -1))
+        num_batches = payload.get("num_batches", None)
+        batch_total = int(num_batches) if num_batches is not None else None
+        batch_part = f"batch={_format_progress(batch_index, batch_total)}"
+        print(f"  {batch_part}{train_part}{batch_time_part}{elapsed_part}")
         return
 
     metrics = payload["val"]
     if not isinstance(metrics, Mapping):
-        print(f"epoch={epoch:03d} step={step:05d}{train_part}")
+        epoch_time_part = f" epoch_time={_format_seconds(payload.get('epoch_time_s', None))}"
+        print(f"->" f"{epoch_part}{train_part}{epoch_time_part}{elapsed_part}")
         return
     metrics_part = " ".join(f"{k}={float(v):.6f}" for k, v in metrics.items())
+    epoch_time_part = f" epoch_time={_format_seconds(payload.get('epoch_time_s', None))}"
     best_tag = " [best]" if bool(payload.get("is_best", False)) else ""
-    print(f"epoch={epoch:03d} step={step:05d}{train_part} {metrics_part}{best_tag}".strip())
+    summary = (
+        f"->{epoch_part} {metrics_part}{train_part}"
+        f"{epoch_time_part}{elapsed_part}{best_tag}"
+    ).rstrip()
+    print(summary)
 
 
 def _default_optical_report(step: int, loss: float) -> None:
@@ -243,6 +281,7 @@ def optimize_dataset_params(
     val_every_epochs: int = 1,
     val_every_steps: int = 0,
     log_every_steps: int = 50,
+    report_batch_progress: bool = True,
     select_metric: str | None = None,
     select_mode: Literal["min", "max"] = "min",
     jit: bool = True,
@@ -279,6 +318,9 @@ def optimize_dataset_params(
     last_train_loss: float | None = None
     final_val_metrics: dict[str, float] | None = None
     batch_iter_any = cast(Callable[..., Iterable[BatchT]], batch_iter_fn)
+    start_time = time.perf_counter()
+    epoch_start_time = start_time
+    last_batch_time_s: float | None = None
 
     def iter_batches(epoch: int) -> Iterable[BatchT]:
         try:
@@ -292,6 +334,17 @@ def optimize_dataset_params(
     def maybe_report(payload: dict[str, Any]) -> None:
         if reporter is not None:
             reporter(payload)
+
+    def report_epoch_start(*, epoch: int, num_batches: int | None) -> None:
+        maybe_report(
+            {
+                "kind": "epoch_start",
+                "epoch": epoch,
+                "total_epochs": epochs,
+                "num_batches": num_batches,
+                "elapsed_s": time.perf_counter() - start_time,
+            }
+        )
 
     def run_validation(*, step: int, epoch: int) -> None:
         nonlocal final_val_metrics, best_epoch
@@ -313,21 +366,31 @@ def optimize_dataset_params(
             {
                 "step": step,
                 "epoch": epoch,
+                "total_epochs": epochs,
                 "train_loss": last_train_loss,
                 "val": metrics,
                 "is_best": is_best,
                 "best_metric": best.best_value,
                 "best_metric_name": metric_name,
+                "elapsed_s": time.perf_counter() - start_time,
+                "batch_time_s": last_batch_time_s,
+                "epoch_time_s": time.perf_counter() - epoch_start_time,
             }
         )
 
     step = 0
     for epoch in range(epochs):
+        epoch_start_time = time.perf_counter()
+        epoch_batches = iter_batches(epoch)
+        num_batches = len(epoch_batches) if isinstance(epoch_batches, Sized) else None
+        report_epoch_start(epoch=epoch, num_batches=num_batches)
         saw_batch = False
-        for batch in iter_batches(epoch):
+        for batch_index, batch in enumerate(epoch_batches, start=1):
             saw_batch = True
+            step_start = time.perf_counter()
             loss, grads = value_and_grad(params, batch)
             params, opt_state = apply_optax_updates(optimizer, params, opt_state, grads)
+            last_batch_time_s = time.perf_counter() - step_start
             last_train_loss = float(loss)
             train_loss_history.append(last_train_loss)
 
@@ -335,13 +398,21 @@ def optimize_dataset_params(
                 best.update(last_train_loss, params, step=step)
                 best_epoch = epoch if best.best_step == step else best_epoch
 
-            should_log_train = log_every_steps > 0 and (step % log_every_steps == 0)
-            if reporter is not None and should_log_train:
+            should_log_train = (
+                report_batch_progress
+                and ((log_every_steps <= 0) or (step % log_every_steps == 0))
+            )
+            if reporter is not None and should_log_train and report_batch_progress:
                 maybe_report(
                     {
-                        "step": step,
+                        "kind": "batch_progress",
                         "epoch": epoch,
+                        "total_epochs": epochs,
+                        "batch_index": batch_index,
+                        "num_batches": num_batches,
                         "train_loss": last_train_loss,
+                        "elapsed_s": time.perf_counter() - start_time,
+                        "batch_time_s": last_batch_time_s,
                     }
                 )
 
@@ -358,6 +429,18 @@ def optimize_dataset_params(
 
         if val_eval_fn is not None and val_every_epochs > 0 and (epoch + 1) % val_every_epochs == 0:
             run_validation(step=step - 1, epoch=epoch)
+        elif reporter is not None:
+            maybe_report(
+                {
+                    "kind": "epoch_summary",
+                    "epoch": epoch,
+                    "total_epochs": epochs,
+                    "train_loss": last_train_loss,
+                    "val": {},
+                    "elapsed_s": time.perf_counter() - start_time,
+                    "epoch_time_s": time.perf_counter() - epoch_start_time,
+                }
+            )
 
     if not train_loss_history:
         raise RuntimeError("optimization did not run any training steps")
@@ -404,6 +487,7 @@ def optimize_dataset_optical_module(
     val_every_epochs: int = 1,
     val_every_steps: int = 0,
     log_every_steps: int = 0,
+    report_batch_progress: bool = True,
     jit: bool = True,
     seed: int = 0,
     drop_last_train: bool = False,
@@ -452,7 +536,11 @@ def optimize_dataset_optical_module(
         data: tuple[Any, ...],
     ) -> dict[str, float]:
         losses: list[float] = []
-        for batch in iter_minibatches(*data, batch_size=batch_size, shuffle=False):
+        batches = cast(
+            Iterable[tuple[Any, ...]],
+            iter_minibatches(*data, batch_size=batch_size, shuffle=False),
+        )
+        for batch in batches:
             losses.append(float(effective_batch_loss_fn(params, batch)))
         if not losses:
             raise ValueError("validation data produced no batches")
@@ -472,6 +560,7 @@ def optimize_dataset_optical_module(
         val_every_epochs=val_every_epochs,
         val_every_steps=val_every_steps,
         log_every_steps=log_every_steps,
+        report_batch_progress=report_batch_progress,
         select_metric=select_metric,
         select_mode="min",
         jit=jit,
@@ -505,6 +594,7 @@ def optimize_dataset_hybrid_module(
     val_every_epochs: int = 1,
     val_every_steps: int = 0,
     log_every_steps: int = 0,
+    report_batch_progress: bool = True,
     jit: bool = True,
     seed: int = 0,
     drop_last_train: bool = False,
@@ -579,7 +669,11 @@ def optimize_dataset_hybrid_module(
         data: tuple[Any, ...],
     ) -> dict[str, float]:
         losses: list[float] = []
-        for batch in iter_minibatches(*data, batch_size=batch_size, shuffle=False):
+        batches = cast(
+            Iterable[tuple[Any, ...]],
+            iter_minibatches(*data, batch_size=batch_size, shuffle=False),
+        )
+        for batch in batches:
             losses.append(float(combined_loss_fn(params, batch)))
         if not losses:
             raise ValueError("validation data produced no batches")
@@ -603,6 +697,7 @@ def optimize_dataset_hybrid_module(
         val_every_epochs=val_every_epochs,
         val_every_steps=val_every_steps,
         log_every_steps=log_every_steps,
+        report_batch_progress=report_batch_progress,
         select_metric=select_metric,
         select_mode="min",
         jit=jit,
