@@ -2,7 +2,7 @@
 
 This section is the Phase 2 entry point for example-driven documentation.
 
-The notebooks under `examples/notebooks/` remain the canonical rendered tutorial artifacts, synced from `examples/scripts/`. During docs builds, the notebooks are mirrored into the docs tree and rendered directly as pages below.
+The notebooks under `examples/notebooks/` remain the canonical rendered tutorial artifacts, synced from the source scripts in `examples/scripts/` plus `experiments/spectral_filter_optimization.py`. During docs builds, the notebooks are mirrored into the docs tree and rendered directly as pages below.
 
 Recommended order:
 

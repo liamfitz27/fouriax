@@ -1,6 +1,6 @@
 """Sweep one training hyperparameter at a time for `spectral_filter_optimization.py`.
 
-This script treats the current constants in `examples/scripts/spectral_filter_optimization.py`
+This script treats the current constants in `experiments/spectral_filter_optimization.py`
 as the baseline configuration, applies a reduced benchmark override for faster iteration,
 then evaluates one candidate value at a time for a single parameter.
 """
@@ -19,8 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_TARGET = Path("examples/scripts/spectral_filter_optimization.py")
-DEFAULT_SUMMARY = Path("artifacts/spectral_filter_summary.json")
+DEFAULT_TARGET = Path("experiments/spectral_filter_optimization.py")
+DEFAULT_SUMMARY = Path("experiments/artifacts/spectral_filter_summary.json")
 
 
 @dataclass(frozen=True)
@@ -117,7 +117,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--target",
         type=Path,
         default=DEFAULT_TARGET,
-        help="Path to examples/scripts/spectral_filter_optimization.py",
+        help="Path to experiments/spectral_filter_optimization.py",
     )
     parser.add_argument(
         "--summary",

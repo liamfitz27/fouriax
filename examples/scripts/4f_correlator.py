@@ -17,11 +17,14 @@ import numpy as np
 
 import fouriax as fx
 
+EXAMPLES_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES_ARTIFACTS_DIR = EXAMPLES_ROOT / "artifacts"
+
 # %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="4f Correlator Example")
-    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--artifacts-dir", type=str, default=str(EXAMPLES_ARTIFACTS_DIR))
     parser.add_argument("--wavelength-um", type=float, default=0.532)
     parser.add_argument("--n-medium", type=float, default=1.0)
     parser.add_argument("--grid-n", type=int, default=128)

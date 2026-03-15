@@ -448,7 +448,7 @@ def update_notebook_code_cells(
         )
 
     changed = False
-    needs_execute = False
+    needs_execute = execute
     for cell_idx, code_text in zip(code_indices, code_cells, strict=True):
         cell = cells[cell_idx]
         new_source = _cell_source_lines(code_text)
@@ -631,7 +631,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="Execute the notebook after updating it to produce fresh outputs.",
+        help="Execute the notebook after syncing, even when code hashes already match.",
     )
     parser.add_argument(
         "--force-match",

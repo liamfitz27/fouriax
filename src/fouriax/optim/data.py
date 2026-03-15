@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, Protocol, TypeVar, cast
+from dataclasses import dataclass
+from typing import Any, Generic, Protocol, TypeVar, cast
 
 import numpy as np
 
@@ -15,6 +16,25 @@ class _BatchableArray(Protocol):
 
 
 ArrayT = TypeVar("ArrayT", bound=_BatchableArray)
+
+
+def num_batches(
+    n_items: int,
+    batch_size: int,
+    *,
+    drop_last: bool = False,
+) -> int:
+    """Return the number of minibatches produced for a dataset size."""
+    if n_items < 0:
+        raise ValueError("n_items must be >= 0")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be > 0")
+    if n_items == 0:
+        return 0
+    full, rem = divmod(n_items, batch_size)
+    if drop_last or rem == 0:
+        return full
+    return full + 1
 
 
 def batch_slices(
@@ -103,6 +123,22 @@ def train_val_split(
     return train_arrays, val_arrays
 
 
+@dataclass(frozen=True)
+class _MinibatchIterable(Generic[ArrayT]):
+    arrays: tuple[ArrayT, ...]
+    idx: np.ndarray
+    batch_size: int
+    drop_last: bool
+
+    def __iter__(self) -> Iterator[tuple[ArrayT, ...]]:
+        for lo, hi in batch_slices(len(self.idx), self.batch_size, drop_last=self.drop_last):
+            batch_idx = self.idx[lo:hi]
+            yield cast(tuple[ArrayT, ...], tuple(arr[batch_idx] for arr in self.arrays))
+
+    def __len__(self) -> int:
+        return num_batches(len(self.idx), self.batch_size, drop_last=self.drop_last)
+
+
 def iter_minibatches(
     *arrays: ArrayT,
     batch_size: int,
@@ -110,7 +146,7 @@ def iter_minibatches(
     seed: int | None = None,
     shuffle: bool = True,
     drop_last: bool = False,
-) -> Iterator[tuple[ArrayT, ...]]:
+) -> _MinibatchIterable:
     """Yield aligned minibatches from one or more arrays."""
     if not arrays:
         raise ValueError("at least one array is required")
@@ -130,7 +166,4 @@ def iter_minibatches(
     idx = np.arange(n_items)
     if shuffle:
         idx = rng.permutation(idx)
-
-    for lo, hi in batch_slices(n_items, batch_size, drop_last=drop_last):
-        batch_idx = idx[lo:hi]
-        yield cast(tuple[ArrayT, ...], tuple(arr[batch_idx] for arr in arrays))
+    return _MinibatchIterable(arrays=arrays, idx=idx, batch_size=batch_size, drop_last=drop_last)

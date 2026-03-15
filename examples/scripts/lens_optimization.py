@@ -14,11 +14,14 @@ import optax
 
 import fouriax as fx
 
+EXAMPLES_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES_ARTIFACTS_DIR = EXAMPLES_ROOT / "artifacts"
+
 # %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Lens Optimization Example")
-    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--artifacts-dir", type=str, default=str(EXAMPLES_ARTIFACTS_DIR))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--grid-n", type=int, default=64)
     parser.add_argument("--grid-dx-um", type=float, default=1.0)

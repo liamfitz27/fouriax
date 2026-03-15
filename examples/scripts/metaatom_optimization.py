@@ -14,6 +14,10 @@ import optax
 
 import fouriax as fx
 
+EXAMPLES_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES_DATA_DIR = EXAMPLES_ROOT / "data"
+EXAMPLES_ARTIFACTS_DIR = EXAMPLES_ROOT / "artifacts"
+
 # %% Paths and Parameters
 
 def parse_args() -> argparse.Namespace:
@@ -21,9 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--npz-path",
         type=str,
-        default="data/meta_atoms/square_pillar_0p7um_cell_sweep_results.npz",
+        default=str(
+            EXAMPLES_DATA_DIR / "meta_atoms" / "square_pillar_0p7um_cell_sweep_results.npz"
+        ),
     )
-    parser.add_argument("--artifacts-dir", type=str, default="artifacts")
+    parser.add_argument("--artifacts-dir", type=str, default=str(EXAMPLES_ARTIFACTS_DIR))
     parser.add_argument("--speed-of-light", type=float, default=299_792_458.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--grid-n", type=int, default=64)

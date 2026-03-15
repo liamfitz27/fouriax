@@ -5,6 +5,8 @@ __pycache__/
 .ruff_cache/
 .venv/
 artifacts/
+examples/artifacts/
+experiments/artifacts/
 docs/_build/
 docs/api/generated/
 docs/examples/notebooks/
@@ -12,5 +14,11 @@ docs/examples/notebooks/
 src/*.egg-info/
 .vscode/
 .codex/
-*AGENTS.md
 .DS_Store
+data/cartoon_faces/
+examples/data/mnist.npz
+experiments/data/*
+!experiments/data/meta_atoms/
+!experiments/data/meta_atoms/**
+!experiments/data/cartoonset_downloader.py
+!experiments/data/process_cartoon_faces.py

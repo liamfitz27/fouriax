@@ -24,6 +24,7 @@ def _sync_managed_example_scripts(repo_root: Path) -> list[Path]:
             continue
 
         managed.append(script_path.relative_to(repo_root))
+
     return managed
 
 
