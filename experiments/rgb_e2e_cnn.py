@@ -30,6 +30,12 @@ def parse_args() -> argparse.Namespace:
         description="Fouriax RGB end-to-end metasurface + CNN experiment.",
     )
     parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default="gpu",
+        help="JAX execution backend.",
+    )
+    parser.add_argument(
         "--train-npz",
         type=str,
         default="",
@@ -62,11 +68,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--noise-level", type=float, default=0.02)
     parser.add_argument("--preview-count", type=int, default=4)
-    parser.add_argument("--cnn-base-channels", type=int, default=32)
-    parser.add_argument("--sensor-size-px", type=int, default=32)
+    parser.add_argument("--cnn-base-channels", type=int, default=64)
+    parser.add_argument("--sensor-size-px", type=int, default=64)
     parser.add_argument("--sensor-dx-um", type=float, default=3.5)
     parser.add_argument("--meta-dx-um", type=float, default=0.7)
-    parser.add_argument("--distance-um", type=float, default=600.0)
+    parser.add_argument("--distance-um", type=float, default=500.0)
     parser.add_argument("--wavelength-min-um", type=float, default=1.0)
     parser.add_argument("--wavelength-max-um", type=float, default=1.3)
     parser.add_argument("--num-wavelengths", type=int, default=3)
@@ -86,6 +92,7 @@ PLOT_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_overview.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_summary.json"
 OPTIMIZED_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_optimized_artifacts.npz"
 
+DEVICE = ARGS.device
 SEED = ARGS.seed
 TRAIN_SAMPLES = ARGS.train_samples
 VAL_SAMPLES = ARGS.val_samples
@@ -230,6 +237,16 @@ def render_rgb(image: np.ndarray) -> np.ndarray:
 def main() -> None:
     if NUM_WAVELENGTHS != 3:
         raise ValueError("this experiment expects exactly 3 wavelengths")
+
+    try:
+        selected_device = jax.devices(DEVICE)[0]
+    except (RuntimeError, IndexError) as exc:
+        raise RuntimeError(f"requested JAX backend {DEVICE!r} is not available") from exc
+    jax.config.update("jax_default_device", selected_device)
+    print(
+        "device="
+        f"{selected_device.platform} kind={getattr(selected_device, 'device_kind', 'unknown')}"
+    )
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 

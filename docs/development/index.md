@@ -28,5 +28,6 @@ python -m sphinx -b html docs docs/_build/html
 :maxdepth: 1
 
 ../DEVELOPMENT_WORKFLOW
+CLUSTER_SYNC_WORKFLOW
 ../TODO
 ```
