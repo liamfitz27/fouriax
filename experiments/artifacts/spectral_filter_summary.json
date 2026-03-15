@@ -1,0 +1,21 @@
+{
+  "seed": 0,
+  "array_size": 3,
+  "num_filters": 9,
+  "pca_components": 16,
+  "proxy_batch_size": 16,
+  "proxy_epochs": 1,
+  "proxy_lr": 0.005,
+  "recon_batch_size": 16,
+  "recon_epochs": 1,
+  "recon_filter_lr": 0.08,
+  "recon_decoder_lr": 0.0008,
+  "photon_scale": 200.0,
+  "smoothness_reg": 0.02,
+  "best_proxy_loss": -12.065898418426514,
+  "best_recon_val_loss": 0.002334891717923297,
+  "train_mse": 0.0024001896381378174,
+  "val_mse": 0.0023752194829285145,
+  "final_val_mse": 0.00238058902323246,
+  "condition_number": 1693.1832275390625
+}
