@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -28,6 +28,12 @@ if str(REPO_ROOT) not in sys.path:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fouriax RGB end-to-end metasurface + CNN experiment.",
+    )
+    parser.add_argument(
+        "--device",
+        choices=("cpu", "gpu"),
+        default="gpu",
+        help="JAX execution backend.",
     )
     parser.add_argument(
         "--train-npz",
@@ -55,18 +61,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train-samples", type=int, default=4096)
     parser.add_argument("--val-samples", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--optical-lr", type=float, default=5e-2)
     parser.add_argument("--decoder-lr", type=float, default=1e-3)
     parser.add_argument("--gradient-clip", type=float, default=1.0)
     parser.add_argument("--noise-level", type=float, default=0.02)
     parser.add_argument("--preview-count", type=int, default=4)
-    parser.add_argument("--cnn-base-channels", type=int, default=32)
-    parser.add_argument("--sensor-size-px", type=int, default=32)
+    parser.add_argument("--cnn-base-channels", type=int, default=64)
+    parser.add_argument("--sensor-size-px", type=int, default=64)
     parser.add_argument("--sensor-dx-um", type=float, default=3.5)
     parser.add_argument("--meta-dx-um", type=float, default=0.7)
-    parser.add_argument("--distance-um", type=float, default=600.0)
+    parser.add_argument("--distance-um", type=float, default=500.0)
+    parser.add_argument("--paraxial-max-angle-rad", type=float, default=0.25)
     parser.add_argument("--wavelength-min-um", type=float, default=1.0)
     parser.add_argument("--wavelength-max-um", type=float, default=1.3)
     parser.add_argument("--num-wavelengths", type=int, default=3)
@@ -83,9 +90,11 @@ DATA_ROOT = Path(ARGS.data_root)
 META_ATOM_NPZ = Path(ARGS.meta_atom_npz)
 ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
 PLOT_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_overview.png"
+PREVIEW_GRID_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_examples.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_summary.json"
 OPTIMIZED_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_optimized_artifacts.npz"
 
+DEVICE = ARGS.device
 SEED = ARGS.seed
 TRAIN_SAMPLES = ARGS.train_samples
 VAL_SAMPLES = ARGS.val_samples
@@ -101,6 +110,7 @@ SENSOR_SIZE_PX = ARGS.sensor_size_px
 SENSOR_DX_UM = ARGS.sensor_dx_um
 META_DX_UM = ARGS.meta_dx_um
 DISTANCE_UM = ARGS.distance_um
+PARAXIAL_MAX_ANGLE_RAD = ARGS.paraxial_max_angle_rad
 WAVELENGTH_MIN_UM = ARGS.wavelength_min_um
 WAVELENGTH_MAX_UM = ARGS.wavelength_max_um
 NUM_WAVELENGTHS = ARGS.num_wavelengths
@@ -227,9 +237,54 @@ def render_rgb(image: np.ndarray) -> np.ndarray:
     return np.clip(np.asarray(image, dtype=np.float32), 0.0, 1.0)
 
 
+def grid_plot_extent(grid: fx.Grid) -> tuple[float, float, float, float]:
+    half_width = 0.5 * grid.nx * grid.dx_um
+    half_height = 0.5 * grid.ny * grid.dy_um
+    return (-half_width, half_width, -half_height, half_height)
+
+
+def plan_input_grid(
+    imager: fx.IncoherentImager,
+    output_grid: fx.Grid,
+    *,
+    paraxial_max_angle_rad: float,
+    coordinates: Literal["spatial", "angular"] = "spatial",
+) -> tuple[fx.Grid, fx.Grid | None]:
+    simulation_grid = imager.infer_from_paraxial_limit(
+        output_grid,
+        paraxial_max_angle_rad=paraxial_max_angle_rad,
+    )
+    if coordinates == "spatial":
+        return simulation_grid, None
+    if coordinates != "angular":
+        raise ValueError("coordinates must be 'spatial' or 'angular'")
+    if imager.psf_source != "plane_wave_focus":
+        raise ValueError("angular input grids are only supported for plane_wave_focus imagers")
+
+    # For far-field scenes, each input pixel corresponds to an incident angle.
+    angular_grid = fx.Grid.from_extent(
+        nx=simulation_grid.nx,
+        ny=simulation_grid.ny,
+        dx_um=output_grid.dx_um / imager.distance_um,
+        dy_um=output_grid.dy_um / imager.distance_um,
+    )
+    return simulation_grid, angular_grid
+
+
 def main() -> None:
     if NUM_WAVELENGTHS != 3:
         raise ValueError("this experiment expects exactly 3 wavelengths")
+
+    try:
+        selected_device = jax.devices(DEVICE)[0]
+    except (RuntimeError, IndexError):
+        print(f"requested JAX backend {DEVICE!r} is not available, falling back to CPU")
+        selected_device = jax.devices("cpu")[0]
+    jax.config.update("jax_default_device", selected_device)
+    print(
+        "device="
+        f"{selected_device.platform} kind={getattr(selected_device, 'device_kind', 'unknown')}"
+    )
 
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -363,6 +418,16 @@ def main() -> None:
         {"params": k_init},
         jnp.zeros((1, SENSOR_SIZE_PX, SENSOR_SIZE_PX), dtype=jnp.float32),
     )
+    input_grid, input_angular_grid = plan_input_grid(
+        build_incoherent_imager(init_optical_params),
+        sensor_grid,
+        paraxial_max_angle_rad=PARAXIAL_MAX_ANGLE_RAD,
+        coordinates="angular",
+    )
+    if input_angular_grid is None:
+        raise RuntimeError("expected an angular input grid for far-field planning")
+    input_extent_deg = tuple(np.degrees(v) for v in grid_plot_extent(input_angular_grid))
+    sensor_extent_um = grid_plot_extent(sensor_grid)
 
     train_noise_keys = np.asarray(jax.random.split(k_train_noise, train.shape[0]))
     val_noise_keys = np.asarray(jax.random.split(k_val_noise, val.shape[0]))
@@ -429,6 +494,13 @@ def main() -> None:
         "grids:"
         f" sensor={sensor_grid.nx}x{sensor_grid.ny} @ {sensor_grid.dx_um:.2f} um,"
         f" meta/field={optical_grid.nx}x{optical_grid.ny} @ {optical_grid.dx_um:.2f} um"
+    )
+    print(
+        "planned_input_grid:"
+        f" simulation={input_grid.nx}x{input_grid.ny} @ {input_grid.dx_um:.2f} um,"
+        f" angular={np.degrees(input_angular_grid.dx_um):.4f} x"
+        f" {np.degrees(input_angular_grid.dy_um):.4f} deg,"
+        f" paraxial_max_angle_rad={PARAXIAL_MAX_ANGLE_RAD:.3f}"
     )
     print(f"wavelengths_um={np.asarray(wavelengths_um)}")
     print(
@@ -499,6 +571,11 @@ def main() -> None:
         "meta_shape": [optical_grid.ny, optical_grid.nx],
         "sensor_dx_um": float(sensor_grid.dx_um),
         "meta_dx_um": float(optical_grid.dx_um),
+        "input_dx_um": float(input_grid.dx_um),
+        "input_dy_um": float(input_grid.dy_um),
+        "input_dtheta_x_rad": float(input_angular_grid.dx_um),
+        "input_dtheta_y_rad": float(input_angular_grid.dy_um),
+        "paraxial_max_angle_rad": float(PARAXIAL_MAX_ANGLE_RAD),
         "wavelengths_um": np.asarray(wavelengths_um, dtype=np.float32).tolist(),
         "distance_um": float(DISTANCE_UM),
         "noise_level": float(NOISE_LEVEL),
@@ -518,6 +595,8 @@ def main() -> None:
         optimized_side_lengths_um=optimized_side_map,
         optimized_field_psf=np.asarray(optimized_field_psf),
         optimized_sensor_psf=np.asarray(optimized_sensor_psf),
+        input_grid_extent_deg=np.asarray(input_extent_deg, dtype=np.float32),
+        sensor_grid_extent_um=np.asarray(sensor_extent_um, dtype=np.float32),
         preview_target=np.asarray(preview_images),
         preview_measurement=np.asarray(preview_mono),
         preview_reconstruction=np.asarray(preview_recon),
@@ -551,43 +630,92 @@ def main() -> None:
         axes[0, 2].set_yticks([])
         plt.colorbar(side_im, ax=axes[0, 2], fraction=0.046, pad=0.04)
 
-        axes[1, 0].imshow(np.asarray(preview_mono[0]), cmap="magma")
+        fig.tight_layout(rect=(0.0, 0.0, 0.91, 1.0))
+
+        mono_im = axes[1, 0].imshow(
+            np.asarray(preview_mono[0]),
+            cmap="magma",
+            extent=sensor_extent_um,
+        )
         axes[1, 0].set_title("Mono Measurement")
-        axes[1, 0].set_xticks([])
-        axes[1, 0].set_yticks([])
+        axes[1, 0].set_xlabel("x (um)")
+        axes[1, 0].set_ylabel("y (um)")
+        mono_cbar_ax = fig.add_axes((0.88, 0.52, 0.015, 0.20))
+        fig.colorbar(mono_im, cax=mono_cbar_ax, label="Mono Intensity")
 
-        axes[1, 1].imshow(render_rgb(np.asarray(preview_images[0])))
-        axes[1, 1].set_title("Target RGB")
-        axes[1, 1].set_xticks([])
-        axes[1, 1].set_yticks([])
+        axes[1, 1].imshow(render_rgb(np.asarray(preview_images[0])), extent=input_extent_deg)
+        axes[1, 1].set_title("Target RGB\nFar-Field Angular Grid")
+        axes[1, 1].set_xlabel(r"$\theta_x$ (deg)")
+        axes[1, 1].set_ylabel(r"$\theta_y$ (deg)")
 
-        axes[1, 2].imshow(render_rgb(np.asarray(preview_recon[0])))
+        axes[1, 2].imshow(render_rgb(np.asarray(preview_recon[0])), extent=input_extent_deg)
         axes[1, 2].set_title(f"Reconstruction\nPSNR={float(preview_psnr):.2f} dB")
-        axes[1, 2].set_xticks([])
-        axes[1, 2].set_yticks([])
+        axes[1, 2].set_xlabel(r"$\theta_x$ (deg)")
+        axes[1, 2].set_ylabel(r"$\theta_y$ (deg)")
 
+        psf_vmax = float(np.max(np.asarray(optimized_sensor_psf)))
+        psf_artist = None
         for idx, wavelength_um in enumerate(np.asarray(wavelengths_um)):
             ax = axes[2, idx]
             sensor_psf = np.asarray(optimized_sensor_psf[idx])
-            sensor_psf = sensor_psf / np.maximum(sensor_psf.max(), 1e-12)
-            ax.imshow(sensor_psf, cmap="inferno")
+            psf_artist = ax.imshow(
+                sensor_psf,
+                cmap="inferno",
+                extent=sensor_extent_um,
+                vmin=0.0,
+                vmax=psf_vmax,
+            )
             ax.set_title(f"Sensor PSF @ {float(wavelength_um):.3f} um")
-            ax.set_xticks([])
-            ax.set_yticks([])
+            ax.set_xlabel("x (um)")
+            ax.set_ylabel("y (um)")
+        assert psf_artist is not None
+        psf_cbar_ax = fig.add_axes((0.88, 0.27, 0.015, 0.20))
+        fig.colorbar(psf_artist, cax=psf_cbar_ax, label="PSF Intensity")
 
+        sensor_channel_vmax = float(np.max(np.asarray(preview_spectral_sensor[0])))
+        sensor_channel_artist = None
         for idx, wavelength_um in enumerate(np.asarray(wavelengths_um)):
             ax = axes[3, idx]
             sensor_slice = np.asarray(preview_spectral_sensor[0, idx])
-            sensor_slice = sensor_slice / np.maximum(sensor_slice.max(), 1e-12)
-            ax.imshow(sensor_slice, cmap="cividis")
+            sensor_channel_artist = ax.imshow(
+                sensor_slice,
+                cmap="cividis",
+                extent=sensor_extent_um,
+                vmin=0.0,
+                vmax=sensor_channel_vmax,
+            )
             ax.set_title(f"Sensor Channel @ {float(wavelength_um):.3f} um")
-            ax.set_xticks([])
-            ax.set_yticks([])
+            ax.set_xlabel("x (um)")
+            ax.set_ylabel("y (um)")
+        assert sensor_channel_artist is not None
+        sensor_cbar_ax = fig.add_axes((0.88, 0.02, 0.015, 0.20))
+        fig.colorbar(sensor_channel_artist, cax=sensor_cbar_ax, label="Sensor Intensity")
 
-        fig.tight_layout()
         fig.savefig(PLOT_PATH, dpi=150)
         plt.close(fig)
         print(f"saved: {PLOT_PATH}")
+
+        num_preview_examples = min(4, preview_images.shape[0])
+        preview_fig, preview_axes = plt.subplots(3, 4, figsize=(14.0, 9.0))
+        row_titles = ("Ground Truth", "Mono Sensor Output", "Reconstruction")
+        for row_idx, row_title in enumerate(row_titles):
+            preview_axes[row_idx, 0].set_ylabel(row_title, fontsize=11)
+        for col_idx in range(4):
+            if col_idx < num_preview_examples:
+                preview_axes[0, col_idx].imshow(render_rgb(np.asarray(preview_images[col_idx])))
+                preview_axes[1, col_idx].imshow(np.asarray(preview_mono[col_idx]), cmap="magma")
+                preview_axes[2, col_idx].imshow(render_rgb(np.asarray(preview_recon[col_idx])))
+                preview_axes[0, col_idx].set_title(f"Example {col_idx + 1}")
+            for row_idx in range(3):
+                ax = preview_axes[row_idx, col_idx]
+                ax.set_xticks([])
+                ax.set_yticks([])
+                if col_idx >= num_preview_examples:
+                    ax.axis("off")
+        preview_fig.tight_layout()
+        preview_fig.savefig(PREVIEW_GRID_PATH, dpi=150)
+        plt.close(preview_fig)
+        print(f"saved: {PREVIEW_GRID_PATH}")
 
 
 if __name__ == "__main__":

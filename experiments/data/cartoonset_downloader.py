@@ -2,6 +2,10 @@
 
 Downloads the public Cartoon Set archives into ``<data_root>/cartoon_set``,
 extracts them, and splits images into ``train`` and ``valid`` subdirectories.
+
+By default the downloaded ``.tgz`` archives are kept under
+``<data_root>/cartoon_set/raw`` after a successful extract so they can be
+reused or transferred elsewhere later.
 """
 
 from __future__ import annotations
@@ -130,7 +134,6 @@ class CartoonSetDownloader:
         try:
             with tarfile.open(archive_path, "r:gz") as tar:
                 tar.extractall(path=self.cartoon_dir)
-            archive_path.unlink()
             print(f"extracted: {archive_path}")
             return True
         except Exception as exc:
@@ -175,6 +178,19 @@ class CartoonSetDownloader:
 
     def _archive_ready(self, archive_name: str, expected_count: int) -> bool:
         return self._count_images(self._archive_extract_dir(archive_name)) == expected_count
+
+    def _download_missing_archives(self) -> bool:
+        downloaded_any = False
+        for _, url, _ in self.archive_specs:
+            archive_path = self.raw_dir / Path(url).name
+            if archive_path.exists():
+                continue
+            if not download_file(url, archive_path):
+                return False
+            downloaded_any = True
+        if downloaded_any:
+            print(f"raw archives ready under {self.raw_dir}")
+        return True
 
     def _clear_directory_contents(self, root: Path) -> None:
         if not root.exists():
@@ -249,7 +265,7 @@ class CartoonSetDownloader:
         self.setup_directories()
         if self._split_ready():
             print("cartoon set train/valid already present")
-            return True
+            return self._download_missing_archives()
 
         split_total = self._count_images(self.cartoon_dir / "train") + self._count_images(
             self.cartoon_dir / "valid"

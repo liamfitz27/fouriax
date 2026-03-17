@@ -25,6 +25,16 @@ git checkout -b feat/<name>
 4. Commit.
 5. Push and open PR.
 
+## Remote Experiment Workflow
+
+If you are using a local-edit plus SSH/Slurm-run workflow, use the dedicated
+guide in [docs/development/CLUSTER_SYNC_WORKFLOW.md](development/CLUSTER_SYNC_WORKFLOW.md).
+
+That workflow is intentionally different from normal feature development:
+- it uses dedicated run branches instead of `main`
+- it allows tracked artifacts on those run branches
+- it treats the remote clone as execute-only
+
 ## CI Expectations
 CI mirrors the same checks:
 - lint (`ruff`)
