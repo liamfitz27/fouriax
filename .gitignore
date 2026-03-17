@@ -20,3 +20,5 @@ experiments/data/*
 !experiments/data/meta_atoms/**
 !experiments/data/cartoonset_downloader.py
 !experiments/data/process_cartoon_faces.py
+experiments/artifacts/
+experiments/jobs/outputs/
