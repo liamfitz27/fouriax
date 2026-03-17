@@ -16,4 +16,8 @@ module load cuda/12.9
 
 source .venv/bin/activate
 
-srun python -u experiments/rgb_e2e_cnn.py
+srun python -u experiments/rgb_e2e_cnn.py --batch-size 16 \
+    --epochs 50 --optical-lr 5e-3 --decoder-lr 1e-3 --sensor-dx-um 0.7 \
+    --meta-dx-um 0.7 --distance-um 100 --noise-level 0 \
+    --sensor-size-px 128 --cnn-base-channels 64 \
+    --artifacts-dir experiments/artifacts/rgb_e2e_cnn_128_p7sensor_p7meta_100um

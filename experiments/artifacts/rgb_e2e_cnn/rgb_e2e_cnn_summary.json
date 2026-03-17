@@ -1,27 +1,27 @@
 {
-  "train_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/cartoon_faces_nx64_shards",
-  "valid_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/cartoon_faces_nx64_shards",
+  "train_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/cartoon_faces_nx128_shards",
+  "valid_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/cartoon_faces_nx128_shards",
   "data_root": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data",
   "meta_atom_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/meta_atoms/square_pillar_0p7um_cell_sweep_results.npz",
   "train_shape": [
     4096,
-    64,
-    64,
+    128,
+    128,
     3
   ],
   "val_shape": [
     512,
-    64,
-    64,
+    128,
+    128,
     3
   ],
   "sensor_shape": [
-    64,
-    64
+    128,
+    128
   ],
   "meta_shape": [
-    320,
-    320
+    640,
+    640
   ],
   "sensor_dx_um": 3.5,
   "meta_dx_um": 0.7,
@@ -32,12 +32,12 @@
   ],
   "distance_um": 500.0,
   "noise_level": 0.02,
-  "batch_size": 128,
-  "epochs": 50,
-  "optical_lr": 0.05,
+  "batch_size": 16,
+  "epochs": 25,
+  "optical_lr": 0.01,
   "decoder_lr": 0.001,
-  "best_epoch": 49,
-  "best_val_loss": 0.0009089253726415336,
-  "preview_mse": 0.0007319501019082963,
-  "preview_psnr_db": 31.355186462402344
+  "best_epoch": 22,
+  "best_val_loss": 0.0007922487275209278,
+  "preview_mse": 0.0015058348653838038,
+  "preview_psnr_db": 28.222227096557617
 }

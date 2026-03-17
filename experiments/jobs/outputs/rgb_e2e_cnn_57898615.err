@@ -1,0 +1,30 @@
+W0317 10:46:34.808353 1732421 hlo_rematerialization.cc:3204] Can't reduce memory use below 30.00GiB (32212731822 bytes) by rematerialization; only reduced to 32.58GiB (34982592544 bytes), down from 32.58GiB (34982592544 bytes) originally
+W0317 10:46:44.925873 1732395 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 32.57GiB (rounded to 34974204416)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0317 10:46:44.926147 1732395 bfc_allocator.cc:513] *___________________________________________________________________________________________________
+W0317 10:47:05.346353 1732421 hlo_rematerialization.cc:3204] Can't reduce memory use below 29.07GiB (31209664020 bytes) by rematerialization; only reduced to 33.01GiB (35442917408 bytes), down from 33.01GiB (35442917408 bytes) originally
+W0317 10:47:16.293950 1732395 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 33.00GiB (rounded to 35433480704)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0317 10:47:16.294189 1732395 bfc_allocator.cc:513] ****________________________________________________________________________________________________
+W0317 10:47:19.160924 1732418 hlo_rematerialization.cc:3204] Can't reduce memory use below 29.56GiB (31737095803 bytes) by rematerialization; only reduced to 37.07GiB (39804993568 bytes), down from 37.07GiB (39804993568 bytes) originally
+W0317 10:47:29.923886 1732395 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 36.57GiB (rounded to 39268123136)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0317 10:47:29.924111 1732395 bfc_allocator.cc:513] ******______________________________________________________________________________________________
+W0317 10:48:04.506776 1732418 hlo_rematerialization.cc:3204] Can't reduce memory use below 29.56GiB (31737097748 bytes) by rematerialization; only reduced to 37.07GiB (39804993568 bytes), down from 37.07GiB (39804993568 bytes) originally
+W0317 10:48:15.412494 1732395 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 36.57GiB (rounded to 39268123136)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0317 10:48:15.412830 1732395 bfc_allocator.cc:513] *************_______________________________________________________________________________________
+W0317 10:55:34.612118 1732420 hlo_rematerialization.cc:3204] Can't reduce memory use below 29.98GiB (32190082580 bytes) by rematerialization; only reduced to 32.79GiB (35212230688 bytes), down from 32.79GiB (35212230688 bytes) originally
+W0317 10:55:44.764363 1732395 bfc_allocator.cc:502] Allocator (GPU_0_bfc) ran out of memory trying to allocate 32.76GiB (rounded to 35178676736)requested by op 
+If the cause is memory fragmentation maybe the environment variable 'TF_GPU_ALLOCATOR=cuda_malloc_async' will improve the situation. 
+Current allocation summary follows.
+Current allocation summary follows.
+W0317 10:55:44.764618 1732395 bfc_allocator.cc:513] **_***____***_______________________________________________________________________________________

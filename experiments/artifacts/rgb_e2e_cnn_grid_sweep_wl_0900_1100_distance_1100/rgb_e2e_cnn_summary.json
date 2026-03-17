@@ -1,0 +1,43 @@
+{
+  "train_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/cartoon_faces_nx64_shards",
+  "valid_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/cartoon_faces_nx64_shards",
+  "data_root": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data",
+  "meta_atom_npz": "/lustre06/project/6102186/liamfitz/fouriax/experiments/data/meta_atoms/square_pillar_0p7um_cell_sweep_results.npz",
+  "train_shape": [
+    4096,
+    64,
+    64,
+    3
+  ],
+  "val_shape": [
+    512,
+    64,
+    64,
+    3
+  ],
+  "sensor_shape": [
+    64,
+    64
+  ],
+  "meta_shape": [
+    320,
+    320
+  ],
+  "sensor_dx_um": 3.5,
+  "meta_dx_um": 0.7,
+  "wavelengths_um": [
+    1.0999999046325684,
+    0.9899999499320984,
+    0.8999999761581421
+  ],
+  "distance_um": 1100.0,
+  "noise_level": 0.02,
+  "batch_size": 64,
+  "epochs": 50,
+  "optical_lr": 0.001,
+  "decoder_lr": 0.001,
+  "best_epoch": 49,
+  "best_val_loss": 0.0014001428644405678,
+  "preview_mse": 0.0019348514033481479,
+  "preview_psnr_db": 27.13352394104004
+}
