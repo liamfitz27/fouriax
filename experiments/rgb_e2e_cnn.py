@@ -1,4 +1,4 @@
-"""End-to-end RGB metasurface + CNN reconstruction on cartoon-face data."""
+"""End-to-end RGB metasurface + CNN reconstruction on registered RGB datasets."""
 
 from __future__ import annotations
 
@@ -25,9 +25,27 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+def _dataset_names() -> tuple[str, ...]:
+    from experiments.data.dataset_registry import DATASET_NAMES
+
+    return DATASET_NAMES
+
+
+def _get_dataset_spec(dataset_name: str):
+    from experiments.data.dataset_registry import get_dataset_spec
+
+    return get_dataset_spec(dataset_name)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fouriax RGB end-to-end metasurface + CNN experiment.",
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=_dataset_names(),
+        default="cartoon_set",
+        help="Dataset to auto-download, preprocess, and train on when NPZ shards are not passed.",
     )
     parser.add_argument(
         "--device",
@@ -45,7 +63,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
     )
-    parser.add_argument("--data-root", type=str, default=str(EXPERIMENTS_DATA_DIR))
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default=str(EXPERIMENTS_DATA_DIR),
+        help="Parent data directory or dataset root for the selected dataset.",
+    )
     parser.add_argument(
         "--meta-atom-npz",
         type=str,
@@ -56,7 +79,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--artifacts-dir",
         type=str,
-        default=str(EXPERIMENTS_ARTIFACTS_DIR / "rgb_e2e_cnn"),
+        default="",
+        help=(
+            "Override artifact directory. Defaults to "
+            "experiments/artifacts/rgb_e2e_cnn_<dataset>/default."
+        ),
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--train-samples", type=int, default=4096)
@@ -84,11 +111,18 @@ def parse_args() -> argparse.Namespace:
 
 ARGS = parse_args()
 
+DATASET_NAME = ARGS.dataset
+DATASET_SPEC = _get_dataset_spec(DATASET_NAME)
 TRAIN_NPZ = Path(ARGS.train_npz) if ARGS.train_npz else None
 VALID_NPZ = Path(ARGS.valid_npz) if ARGS.valid_npz else None
 DATA_ROOT = Path(ARGS.data_root)
+DATASET_ROOT = DATASET_SPEC.dataset_root(DATA_ROOT)
 META_ATOM_NPZ = Path(ARGS.meta_atom_npz)
-ARTIFACTS_DIR = Path(ARGS.artifacts_dir)
+ARTIFACTS_DIR = (
+    Path(ARGS.artifacts_dir)
+    if ARGS.artifacts_dir
+    else EXPERIMENTS_ARTIFACTS_DIR / f"rgb_e2e_cnn_{DATASET_NAME}" / "default"
+)
 PLOT_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_overview.png"
 PREVIEW_GRID_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_examples.png"
 SUMMARY_PATH = ARTIFACTS_DIR / "rgb_e2e_cnn_summary.json"
@@ -295,13 +329,14 @@ def main() -> None:
         train_source = TRAIN_NPZ
         valid_source = VALID_NPZ
     else:
-        from experiments.data.process_cartoon_faces import ensure_processed_cartoon_faces_dataset
+        from experiments.data.process_rgb_dataset import ensure_processed_rgb_dataset
 
-        dataset_dir = ensure_processed_cartoon_faces_dataset(
+        dataset_dir = ensure_processed_rgb_dataset(
             data_root=DATA_ROOT,
+            dataset_name=DATASET_NAME,
             size=SENSOR_SIZE_PX,
             shard_size=5000,
-            white_threshold=240,
+            white_threshold=None,
             num_workers=0,
             seed=SEED,
             download_if_missing=True,
@@ -488,6 +523,7 @@ def main() -> None:
     )
 
     print("=== RGB E2E CNN Experiment ===")
+    print(f"dataset={DATASET_NAME}")
     print(f"train_npz={train_source}")
     print(f"valid_npz={valid_source}")
     print(
@@ -561,9 +597,11 @@ def main() -> None:
     )
 
     summary = {
+        "dataset_name": DATASET_NAME,
         "train_npz": str(train_source),
         "valid_npz": str(valid_source),
         "data_root": str(DATA_ROOT),
+        "dataset_root": str(DATASET_ROOT),
         "meta_atom_npz": str(META_ATOM_NPZ),
         "train_shape": list(train.shape),
         "val_shape": list(val.shape),

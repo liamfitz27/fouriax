@@ -1,4 +1,4 @@
-"""Preprocess Cartoon Set images into sharded NPZ datasets."""
+"""Preprocess registered RGB datasets into sharded NPZ datasets."""
 
 from __future__ import annotations
 
@@ -15,37 +15,18 @@ from PIL import Image
 from scipy import ndimage
 
 try:
-    from .cartoonset_downloader import (
-        DEFAULT_TRAIN_RATIO,
-        EXPECTED_TOTAL_IMAGES,
-        CartoonSetDownloader,
-    )
+    from .dataset_registry import DATASET_NAMES, BackgroundMode, get_dataset_spec
 except ImportError:  # pragma: no cover - direct script execution fallback
-    from cartoonset_downloader import (
-        DEFAULT_TRAIN_RATIO,
-        EXPECTED_TOTAL_IMAGES,
-        CartoonSetDownloader,
-    )
+    from dataset_registry import DATASET_NAMES, BackgroundMode, get_dataset_spec
 
 
-VALID_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp")
+def processed_shard_dir(data_root: Path, *, size: int, dataset_name: str) -> Path:
+    spec = get_dataset_spec(dataset_name)
+    return spec.processed_shard_dir(Path(data_root), size=size)
 
 
-def processed_shard_dir(data_root: Path, *, size: int) -> Path:
-    return Path(data_root) / f"cartoon_faces_nx{size}_shards"
-
-
-def _expected_split_counts(
-    *,
-    expected_total: int = EXPECTED_TOTAL_IMAGES,
-    train_ratio: float = DEFAULT_TRAIN_RATIO,
-) -> tuple[int, int]:
-    expected_train = int(expected_total * train_ratio)
-    return expected_train, expected_total - expected_train
-
-
-def clear_processed_shards(data_root: Path, *, size: int) -> None:
-    shard_dir = processed_shard_dir(data_root, size=size)
+def clear_processed_shards(data_root: Path, *, size: int, dataset_name: str) -> None:
+    shard_dir = processed_shard_dir(data_root, size=size, dataset_name=dataset_name)
     if not shard_dir.exists():
         return
     for path in shard_dir.iterdir():
@@ -63,11 +44,11 @@ def has_processed_shards(
     *,
     size: int,
     shard_size: int,
-    expected_total: int = EXPECTED_TOTAL_IMAGES,
-    train_ratio: float = DEFAULT_TRAIN_RATIO,
+    dataset_name: str,
 ) -> bool:
-    shard_dir = processed_shard_dir(data_root, size=size)
-    manifest_path = shard_dir / f"cartoon_faces_manifest_nx{size}.json"
+    spec = get_dataset_spec(dataset_name)
+    shard_dir = spec.processed_shard_dir(Path(data_root), size=size)
+    manifest_path = spec.manifest_path(Path(data_root), size=size)
     if not manifest_path.exists():
         return False
 
@@ -76,41 +57,33 @@ def has_processed_shards(
     except json.JSONDecodeError:
         return False
 
-    expected_train, expected_valid = _expected_split_counts(
-        expected_total=expected_total,
-        train_ratio=train_ratio,
-    )
+    if manifest.get("dataset_name") != spec.name:
+        return False
     if manifest.get("size") != size or manifest.get("shard_size") != shard_size:
         return False
-    if (
-        manifest.get("train_count") != expected_train
-        or manifest.get("valid_count") != expected_valid
-    ):
-        return False
 
-    train_records = manifest.get("train_shards", [])
-    valid_records = manifest.get("valid_shards", [])
-    if len(train_records) != ceil(expected_train / shard_size):
-        return False
-    if len(valid_records) != ceil(expected_valid / shard_size):
-        return False
-
-    train_sum = 0
-    valid_sum = 0
-    for record in train_records:
-        filename = record.get("filename")
-        if not filename or not (shard_dir / filename).exists():
+    for subset_name, expected_count in spec.expected_counts.items():
+        count_key = f"{subset_name}_count"
+        if manifest.get(count_key) != expected_count:
             return False
-        train_sum += int(record.get("num_samples", 0))
-    for record in valid_records:
-        filename = record.get("filename")
-        if not filename or not (shard_dir / filename).exists():
+
+        shard_records = manifest.get(f"{subset_name}_shards", [])
+        if len(shard_records) != ceil(expected_count / shard_size):
             return False
-        valid_sum += int(record.get("num_samples", 0))
-    return train_sum == expected_train and valid_sum == expected_valid
+
+        processed_count = 0
+        for record in shard_records:
+            filename = record.get("filename")
+            if not filename or not (shard_dir / filename).exists():
+                return False
+            processed_count += int(record.get("num_samples", 0))
+        if processed_count != expected_count:
+            return False
+
+    return True
 
 
-def scan_images(root: Path, valid_extensions: tuple[str, ...] = VALID_EXTENSIONS) -> list[Path]:
+def scan_images(root: Path, valid_extensions: tuple[str, ...]) -> list[Path]:
     return sorted(
         path
         for path in root.rglob("*")
@@ -148,16 +121,34 @@ def replace_white_background(
     return result
 
 
+def preprocess_image(
+    image: np.ndarray,
+    *,
+    background_mode: BackgroundMode,
+    white_threshold: int,
+) -> np.ndarray:
+    if background_mode == "none":
+        return image
+    if background_mode == "replace_white_border":
+        return replace_white_background(image, white_threshold=white_threshold)
+    raise ValueError(f"unsupported background_mode={background_mode!r}")
+
+
 def process_single_image(
     image_path: Path,
     *,
     img_size: tuple[int, int],
+    background_mode: BackgroundMode,
     white_threshold: int,
 ) -> np.ndarray | None:
     try:
         with Image.open(image_path) as img:
             image = np.asarray(img.convert("RGB"))
-        image = replace_white_background(image, white_threshold=white_threshold)
+        image = preprocess_image(
+            image,
+            background_mode=background_mode,
+            white_threshold=white_threshold,
+        )
         resized = Image.fromarray(image).resize(img_size, Image.Resampling.LANCZOS)
         return np.asarray(resized, dtype=np.float32) / 255.0
     except Exception as exc:
@@ -168,11 +159,13 @@ def process_single_image(
 def save_shards(
     image_paths: list[Path],
     *,
+    dataset_name: str,
     subset_name: str,
     output_dir: Path,
     image_size: int,
     shard_size: int,
     white_threshold: int,
+    background_mode: BackgroundMode,
     num_workers: int,
     force: bool,
 ) -> list[dict[str, object]]:
@@ -180,6 +173,7 @@ def save_shards(
         print(f"no images to process for subset={subset_name}")
         return []
 
+    spec = get_dataset_spec(dataset_name)
     output_dir.mkdir(parents=True, exist_ok=True)
     total_files = len(image_paths)
     num_shards = (total_files + shard_size - 1) // shard_size
@@ -187,11 +181,12 @@ def save_shards(
     process_func = partial(
         process_single_image,
         img_size=(image_size, image_size),
+        background_mode=background_mode,
         white_threshold=white_threshold,
     )
 
     print(
-        f"processing subset={subset_name} images={total_files} "
+        f"processing dataset={dataset_name} subset={subset_name} images={total_files} "
         f"shards={num_shards} shard_size={shard_size} workers={num_cpus}"
     )
     shard_records: list[dict[str, object]] = []
@@ -200,7 +195,7 @@ def save_shards(
         hi = min((shard_idx + 1) * shard_size, total_files)
         shard_files = image_paths[lo:hi]
         shard_name = (
-            f"cartoon_faces_{subset_name}_nx{image_size}_nwvl3_ns{len(shard_files)}"
+            f"{spec.processed_prefix}_{subset_name}_nx{image_size}_nwvl3_ns{len(shard_files)}"
             f"_shard{shard_idx:03d}.npz"
         )
         save_path = output_dir / shard_name
@@ -226,6 +221,7 @@ def save_shards(
 
         images = np.stack(valid_results, axis=0).astype(np.float32)
         metadata = {
+            "dataset_name": dataset_name,
             "subset": subset_name,
             "image_shape": [image_size, image_size, 3],
             "num_samples_total": total_files,
@@ -233,6 +229,7 @@ def save_shards(
             "shard_index": shard_idx,
             "num_shards": num_shards,
             "img_size": [image_size, image_size],
+            "background_mode": background_mode,
             "white_threshold": white_threshold,
         }
         np.savez_compressed(save_path, images=images, params_json=np.asarray(json.dumps(metadata)))
@@ -248,23 +245,167 @@ def save_shards(
     return shard_records
 
 
-def ensure_raw_cartoonset(
+def _build_downloader(dataset_name: str, data_root: Path, seed: int):
+    if dataset_name == "cartoon_set":
+        try:
+            from .cartoonset_downloader import CartoonSetDownloader
+        except ImportError:  # pragma: no cover - direct script execution fallback
+            from cartoonset_downloader import CartoonSetDownloader
+
+        return CartoonSetDownloader(Path(data_root), seed=seed)
+
+    if dataset_name == "div2k":
+        try:
+            from .div2k_downloader import DIV2KDownloader
+        except ImportError:  # pragma: no cover - direct script execution fallback
+            from div2k_downloader import DIV2KDownloader
+
+        return DIV2KDownloader(Path(data_root))
+
+    raise ValueError(f"unsupported dataset_name={dataset_name!r}")
+
+
+def ensure_raw_rgb_dataset(
     data_root: Path,
     *,
+    dataset_name: str,
     seed: int,
     download_if_missing: bool,
 ) -> tuple[Path, Path]:
-    cartoon_dir = Path(data_root) / "cartoon_set"
-    train_dir = cartoon_dir / "train"
-    valid_dir = cartoon_dir / "valid"
-    downloader = CartoonSetDownloader(Path(data_root), seed=seed)
-    if downloader._split_ready():
+    spec = get_dataset_spec(dataset_name)
+    dataset_root = spec.dataset_root(Path(data_root))
+    train_dir = spec.subset_dir(dataset_root, "train")
+    valid_dir = spec.subset_dir(dataset_root, "valid")
+    downloader = _build_downloader(dataset_name, Path(data_root), seed)
+
+    if downloader.dataset_ready():
         return train_dir, valid_dir
     if not download_if_missing:
-        raise FileNotFoundError(f"missing Cartoon Set train/valid under {cartoon_dir}")
+        raise FileNotFoundError(f"missing dataset train/valid under {dataset_root}")
     if not downloader.download():
-        raise RuntimeError("failed to download and prepare Cartoon Set")
+        raise RuntimeError(f"failed to download and prepare dataset {dataset_name}")
     return train_dir, valid_dir
+
+
+def process_rgb_image_dataset(
+    *,
+    data_root: Path,
+    dataset_name: str,
+    size: int,
+    shard_size: int = 5000,
+    white_threshold: int | None = None,
+    num_workers: int = 0,
+    force: bool = False,
+    seed: int = 0,
+    download_if_missing: bool = True,
+) -> Path:
+    spec = get_dataset_spec(dataset_name)
+    data_root = Path(data_root)
+    output_dir = spec.processed_shard_dir(data_root, size=size)
+    resolved_white_threshold = spec.white_threshold if white_threshold is None else white_threshold
+    if force or not has_processed_shards(
+        data_root,
+        size=size,
+        shard_size=shard_size,
+        dataset_name=dataset_name,
+    ):
+        clear_processed_shards(data_root, size=size, dataset_name=dataset_name)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    train_dir, valid_dir = ensure_raw_rgb_dataset(
+        data_root,
+        dataset_name=dataset_name,
+        seed=seed,
+        download_if_missing=download_if_missing,
+    )
+    train_paths = scan_images(train_dir, spec.valid_extensions)
+    valid_paths = scan_images(valid_dir, spec.valid_extensions)
+    print(f"dataset={dataset_name} train_images={len(train_paths)} valid_images={len(valid_paths)}")
+
+    expected_train = spec.expected_counts["train"]
+    expected_valid = spec.expected_counts["valid"]
+    if len(train_paths) != expected_train or len(valid_paths) != expected_valid:
+        raise ValueError(
+            f"dataset {dataset_name} has unexpected split sizes: "
+            f"train={len(train_paths)} valid={len(valid_paths)} "
+            f"(expected {expected_train}/{expected_valid})"
+        )
+
+    train_records = save_shards(
+        train_paths,
+        dataset_name=dataset_name,
+        subset_name="train",
+        output_dir=output_dir,
+        image_size=size,
+        shard_size=shard_size,
+        white_threshold=resolved_white_threshold,
+        background_mode=spec.background_mode,
+        num_workers=num_workers,
+        force=force,
+    )
+    valid_records = save_shards(
+        valid_paths,
+        dataset_name=dataset_name,
+        subset_name="valid",
+        output_dir=output_dir,
+        image_size=size,
+        shard_size=shard_size,
+        white_threshold=resolved_white_threshold,
+        background_mode=spec.background_mode,
+        num_workers=num_workers,
+        force=force,
+    )
+
+    manifest = {
+        "dataset_name": dataset_name,
+        "data_root": str(data_root),
+        "dataset_root": str(spec.dataset_root(data_root)),
+        "output_dir": str(output_dir),
+        "size": size,
+        "shard_size": shard_size,
+        "seed": seed,
+        "background_mode": spec.background_mode,
+        "white_threshold": resolved_white_threshold,
+        "train_count": len(train_paths),
+        "valid_count": len(valid_paths),
+        "train_shards": train_records,
+        "valid_shards": valid_records,
+    }
+    manifest_path = spec.manifest_path(data_root, size=size)
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    print(f"saved manifest: {manifest_path}")
+    return output_dir
+
+
+def ensure_processed_rgb_dataset(
+    *,
+    data_root: Path,
+    dataset_name: str,
+    size: int,
+    shard_size: int = 5000,
+    white_threshold: int | None = None,
+    num_workers: int = 0,
+    seed: int = 0,
+    download_if_missing: bool = True,
+) -> Path:
+    if has_processed_shards(
+        data_root,
+        size=size,
+        shard_size=shard_size,
+        dataset_name=dataset_name,
+    ):
+        return processed_shard_dir(data_root, size=size, dataset_name=dataset_name)
+    return process_rgb_image_dataset(
+        data_root=data_root,
+        dataset_name=dataset_name,
+        size=size,
+        shard_size=shard_size,
+        white_threshold=white_threshold,
+        num_workers=num_workers,
+        force=False,
+        seed=seed,
+        download_if_missing=download_if_missing,
+    )
 
 
 def process_cartoon_faces_dataset(
@@ -278,58 +419,17 @@ def process_cartoon_faces_dataset(
     seed: int = 0,
     download_if_missing: bool = True,
 ) -> Path:
-    data_root = Path(data_root)
-    output_dir = processed_shard_dir(data_root, size=size)
-    if force or not has_processed_shards(data_root, size=size, shard_size=shard_size):
-        clear_processed_shards(data_root, size=size)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    train_dir, valid_dir = ensure_raw_cartoonset(
-        data_root,
+    return process_rgb_image_dataset(
+        data_root=data_root,
+        dataset_name="cartoon_set",
+        size=size,
+        shard_size=shard_size,
+        white_threshold=white_threshold,
+        num_workers=num_workers,
+        force=force,
         seed=seed,
         download_if_missing=download_if_missing,
     )
-    train_paths = scan_images(train_dir)
-    valid_paths = scan_images(valid_dir)
-    print(f"train_images={len(train_paths)} valid_images={len(valid_paths)}")
-
-    train_records = save_shards(
-        train_paths,
-        subset_name="train",
-        output_dir=output_dir,
-        image_size=size,
-        shard_size=shard_size,
-        white_threshold=white_threshold,
-        num_workers=num_workers,
-        force=force,
-    )
-    valid_records = save_shards(
-        valid_paths,
-        subset_name="valid",
-        output_dir=output_dir,
-        image_size=size,
-        shard_size=shard_size,
-        white_threshold=white_threshold,
-        num_workers=num_workers,
-        force=force,
-    )
-
-    manifest = {
-        "data_root": str(data_root),
-        "output_dir": str(output_dir),
-        "size": size,
-        "shard_size": shard_size,
-        "seed": seed,
-        "white_threshold": white_threshold,
-        "train_count": len(train_paths),
-        "valid_count": len(valid_paths),
-        "train_shards": train_records,
-        "valid_shards": valid_records,
-    }
-    manifest_path = output_dir / f"cartoon_faces_manifest_nx{size}.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2))
-    print(f"saved manifest: {manifest_path}")
-    return output_dir
 
 
 def ensure_processed_cartoon_faces_dataset(
@@ -342,15 +442,13 @@ def ensure_processed_cartoon_faces_dataset(
     seed: int = 0,
     download_if_missing: bool = True,
 ) -> Path:
-    if has_processed_shards(data_root, size=size, shard_size=shard_size):
-        return processed_shard_dir(data_root, size=size)
-    return process_cartoon_faces_dataset(
+    return ensure_processed_rgb_dataset(
         data_root=data_root,
+        dataset_name="cartoon_set",
         size=size,
         shard_size=shard_size,
         white_threshold=white_threshold,
         num_workers=num_workers,
-        force=False,
         seed=seed,
         download_if_missing=download_if_missing,
     )
@@ -358,20 +456,26 @@ def ensure_processed_cartoon_faces_dataset(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Process Cartoon Set into sharded RGB NPZ datasets."
+        description="Process registered RGB datasets into sharded NPZ datasets."
     )
-    parser.add_argument("--data-root", type=str, default=str(Path(__file__).resolve().parent))
+    parser.add_argument("--dataset", choices=DATASET_NAMES, default="cartoon_set")
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default=str(Path(__file__).resolve().parent),
+    )
     parser.add_argument("--size", type=int, default=32)
     parser.add_argument("--shard-size", type=int, default=5000)
-    parser.add_argument("--white-threshold", type=int, default=240)
+    parser.add_argument("--white-threshold", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--no-download", action="store_true")
     args = parser.parse_args()
 
-    process_cartoon_faces_dataset(
+    process_rgb_image_dataset(
         data_root=Path(args.data_root),
+        dataset_name=args.dataset,
         size=args.size,
         shard_size=args.shard_size,
         white_threshold=args.white_threshold,
