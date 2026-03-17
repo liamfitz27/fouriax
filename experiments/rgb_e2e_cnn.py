@@ -328,7 +328,7 @@ def main() -> None:
         dy_um=SENSOR_DX_UM,
     )
     propagator = fx.plan_propagation(
-        mode="asm",
+        mode="rs",
         grid=optical_grid,
         spectrum=spectrum,
         distance_um=DISTANCE_UM,
