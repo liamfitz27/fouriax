@@ -18,7 +18,6 @@ examples/data/mnist.npz
 experiments/data/*
 !experiments/data/meta_atoms/
 !experiments/data/meta_atoms/**
-!experiments/data/cartoonset_downloader.py
-!experiments/data/process_cartoon_faces.py
+!experiments/data/*.py
 experiments/artifacts/
 experiments/jobs/outputs/

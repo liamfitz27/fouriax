@@ -18,6 +18,11 @@ import time
 import urllib.request
 from pathlib import Path
 
+try:
+    from .dataset_registry import cartoon_set_root
+except ImportError:  # pragma: no cover - direct script execution fallback
+    from dataset_registry import cartoon_set_root
+
 ARCHIVE_SPECS: tuple[tuple[str, str, int], ...] = (
     (
         "cartoonset10k",
@@ -118,7 +123,7 @@ class CartoonSetDownloader:
         archive_specs: tuple[tuple[str, str, int], ...] = ARCHIVE_SPECS,
     ):
         self.data_root = Path(data_root)
-        self.cartoon_dir = self.data_root / "cartoon_set"
+        self.cartoon_dir = cartoon_set_root(self.data_root)
         self.raw_dir = self.cartoon_dir / "raw"
         self.seed = seed
         self.train_ratio = train_ratio
@@ -152,6 +157,9 @@ class CartoonSetDownloader:
             and valid_count > 0
             and (train_count + valid_count) == self.expected_total
         )
+
+    def dataset_ready(self) -> bool:
+        return self._split_ready()
 
     @staticmethod
     def _count_images(root: Path) -> int:
@@ -332,7 +340,11 @@ class CartoonSetDownloader:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download and split Cartoon Set into train/valid.")
-    parser.add_argument("--data-root", type=str, default=str(Path(__file__).resolve().parent))
+    parser.add_argument(
+        "--data-root",
+        type=str,
+        default=str(Path(__file__).resolve().parent / "cartoon_set"),
+    )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
